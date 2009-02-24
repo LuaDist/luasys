@@ -122,12 +122,10 @@ int sys_seterror (lua_State *L, int err);
  * Threading
  */
 
-void sys_settls (void *value);
-void *sys_gettls (void);
-
 struct sys_vmthread;
 
 struct sys_vmthread *sys_get_vmthread (void);
+void sys_set_vmthread (struct sys_vmthread *vmtd);
 
 void sys_vm2_enter (struct sys_vmthread *vmtd);
 void sys_vm2_leave (struct sys_vmthread *vmtd);
@@ -143,15 +141,20 @@ void sys_delthread (lua_State *L);
  * Object Events
  */
 
-#define SYS_OBJEVENT_TAG	"__evq"
+#define SYS_TRIGGER_TAG	"__evq"
 
-typedef volatile void *		sys_objevent_t;
+typedef void *		sys_trigger_t;
 
-typedef sys_objevent_t *(*sys_get_objevent_t) (lua_State *L, struct sys_vmthread **vmtdp);
+typedef sys_trigger_t *(*sys_get_trigger_t) (lua_State *L, struct sys_vmthread **vmtdp);
 
-enum {SYS_EVREAD = 1, SYS_EVWRITE = 2, SYS_EVEOF = 4, SYS_EVDEL = 8};
+enum {
+    SYS_EVREAD	= 1,
+    SYS_EVWRITE	= 2,
+    SYS_EVEOF	= 4,
+    SYS_EVDEL	= 8
+};
 
-int sys_trigger_objevent (sys_objevent_t *event, int flags);
+int sys_trigger_notify (sys_trigger_t *trigger, int flags);
 
 
 /*

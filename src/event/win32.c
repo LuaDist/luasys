@@ -286,7 +286,7 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	EnterCriticalSection(head_cs);
 	ResetEvent(wth->signal);
 
-	(volatile void *) threads = evq->ready;
+	threads = evq->ready;
 	evq->ready = NULL;
 
 	sig_ready = evq->sig_ready;

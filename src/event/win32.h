@@ -13,13 +13,13 @@ struct win32thr {
 
     CRITICAL_SECTION cs;
     HANDLE signal;
-    volatile unsigned int n;  /* count of events */
+    unsigned int volatile n;  /* count of events */
 
 #define WTHR_SLEEP	1
 #define WTHR_POLL	2
 #define WTHR_READY	3
 #define WTHR_ACK	4
-    volatile unsigned int state;
+    unsigned int volatile state;
 
     unsigned int idx;  /* result of Wait* */
     HANDLE handles[NEVENT];  /* last handle is reserved for signal event */
@@ -41,10 +41,10 @@ struct win32iocp {
     HANDLE ack_event;							\
     struct event *win_msg;  /* window messages handler */		\
     struct win32iocp iocp;						\
-    volatile struct win32thr *ready;					\
+    struct win32thr * volatile ready;					\
     struct win32thr head;						\
-    volatile int nwakeup;  /* number of the re-polling threads */	\
-    volatile int sig_ready;  /* triggered signals */
+    int volatile nwakeup;  /* number of the re-polling threads */	\
+    int volatile sig_ready;  /* triggered signals */
 
 int win32iocp_set (struct event *ev, unsigned int ev_flags);
 

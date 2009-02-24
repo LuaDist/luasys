@@ -117,7 +117,9 @@ sock_new (lua_State *L)
     return 1;
 }
 
+
 #ifdef _WIN32
+
 static int
 sock_pair (int type, sd_t sv[2])
 {
@@ -134,17 +136,30 @@ sock_pair (int type, sd_t sv[2])
 	 && !listen(sd, 1)
 	 && !getsockname(sd, (struct sockaddr *) &sa, &len)
 	 && (sv[0] = WSASocket(PF_INET, type, 0, NULL, 0, IS_OVERLAPPED)) != -1) {
+	    struct sockaddr_in sa2;
+	    int len2;
+
+	    sv[1] = (sd_t) -1;
 	    if (!connect(sv[0], (struct sockaddr *) &sa, len)
-	     && (sv[1] = accept(sd, (struct sockaddr *) &sa, &len)) != -1)
+	     && (sv[1] = accept(sd, (struct sockaddr *) &sa, &len)) != -1
+	     && !getpeername(sv[0], (struct sockaddr *) &sa, &len)
+	     && !getsockname(sv[1], (struct sockaddr *) &sa2, &len2)
+	     && len == len2
+	     && sa.sin_addr.s_addr == sa2.sin_addr.s_addr
+	     && sa.sin_port == sa2.sin_port)
 		res = 0;
-	    else
+	    else {
 		closesocket(sv[0]);
+		if (sv[1] != (sd_t) -1) closesocket(sv[1]);
+	    }
 	}
 	closesocket(sd);
     }
     return res;
 }
+
 #endif
+
 
 /*
  * Arguments: sd_udata, [type ("stream", "dgram"), domain ("inet", "unix"),

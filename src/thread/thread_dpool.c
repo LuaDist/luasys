@@ -3,11 +3,11 @@
 #define DPOOL_TYPENAME	"sys.thread.data_pool"
 
 struct data_pool {
-    volatile unsigned int n;  /* count of data in storage */
+    unsigned int volatile n;  /* count of data in storage */
 
-    volatile int nwaits;  /* number of blocked readers */
-    volatile int nput; /* number of items to put as new data */
-    volatile struct sys_thread *td;  /* data writer */
+    int volatile nwaits;  /* number of blocked readers */
+    int volatile nput; /* number of items to put as new data */
+    struct sys_thread * volatile td;  /* data writer */
 
     unsigned int idx, top;  /* storage indexes */
     unsigned int max;  /* maximum watermark of data */
@@ -17,7 +17,7 @@ struct data_pool {
     unsigned int flags;
 
     thread_event_t tev;  /* synchronization */
-    sys_objevent_t event;  /* notify event_queue */
+    sys_trigger_t trigger;  /* notify event_queue */
 };
 
 
@@ -106,8 +106,8 @@ dpool_put (lua_State *L)
 	dp->top = top;
 
 	/* notify event_queue */
-	if (!dp->n++ && dp->event)
-	    sys_trigger_objevent(&dp->event, SYS_EVREAD);
+	if (!dp->n++ && dp->trigger)
+	    sys_trigger_notify(&dp->trigger, SYS_EVREAD);
 
 	thread_event_signal(&dp->tev);
     }
@@ -159,8 +159,8 @@ dpool_get (lua_State *L)
 		dp->idx = dp->top = 0;
 	    if (dp->n-- == dp->max) {
 		/* notify event_queue */
-		if (dp->event)
-		    sys_trigger_objevent(&dp->event, SYS_EVWRITE);
+		if (dp->trigger)
+		    sys_trigger_notify(&dp->trigger, SYS_EVWRITE);
 		thread_event_signal(&dp->tev);
 	    }
 	    return nput;
@@ -283,13 +283,13 @@ dpool_tostring (lua_State *L)
 /*
  * Arguments: ..., dpool_udata
  */
-static sys_objevent_t *
-dpool_getevent (lua_State *L, struct sys_vmthread **vmtdp)
+static sys_trigger_t *
+dpool_get_trigger (lua_State *L, struct sys_vmthread **vmtdp)
 {
     struct data_pool *dp = checkudata(L, -1, DPOOL_TYPENAME);
 
     *vmtdp = NULL;
-    return &dp->event;
+    return &dp->trigger;
 }
 
 

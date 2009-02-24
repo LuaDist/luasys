@@ -43,7 +43,7 @@ traceback (lua_State *L) {
 
 
 static int
-lisapi_init ()
+lisapi_init (void)
 {
     lua_State *L;
 
@@ -65,7 +65,7 @@ lisapi_init ()
      || !lua_isfunction(L, -1))
 	goto err;
 
-    g_ISAPI.vmtd = sys_gettls();
+    g_ISAPI.vmtd = sys_get_vmthread();
     if (g_ISAPI.vmtd) {
 	luaL_newmetatable(L, ECB_TYPENAME);
 	lua_pushvalue(L, -1);  /* push metatable */
@@ -75,7 +75,7 @@ lisapi_init ()
 
 	g_ISAPI.L = L;
 	sys_vm_leave();
-	sys_settls(NULL);
+	sys_set_vmthread(NULL);
 	return 0;
     }
 #ifndef NDEBUG

@@ -2,7 +2,7 @@
 
 /* Global signal events */
 static struct event *sig_events[NSIG];
-static volatile int sig_ignore;  /* ignored signals */
+static int volatile sig_ignore;  /* ignored signals */
 
 /* References count do not trace */
 #define signal_set(add)	(!SetConsoleCtrlHandler((PHANDLER_ROUTINE) signal_handler, (add)))

@@ -23,7 +23,7 @@ sys_event_queue (lua_State *L)
 	lua_setmetatable(L, -2);
 
 	lua_newtable(L);  /* environ. | {ev_id => ev_udata} */
-	lua_newtable(L);  /* {ev_id => fd_udata | ev_ludata => get_objevent_func} */
+	lua_newtable(L);  /* {ev_id => fd_udata | ev_ludata => get_trigger_func} */
 	lua_rawseti(L, -2, EVQ_FD_UDATA);
 	lua_newtable(L);  /* {ev_id => cb_fun} */
 	lua_rawseti(L, -2, EVQ_CALLBACK);
@@ -139,7 +139,7 @@ levq_nextid (lua_State *L, int idx, struct event_queue *evq)
  *	events (string: "r", "w", "rw") | signal (number),
  *	callback (function),
  *	[timeout (milliseconds), one_shot (boolean),
- *	event_flags (number), get_objevent_func (lightuserdata)]
+ *	event_flags (number), get_trigger_func (cfunction)]
  * Returns: [ev_id (number)]
  */
 static int
@@ -154,8 +154,8 @@ levq_add (lua_State *L)
      ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 5);
     const unsigned int ev_flags = (lua_toboolean(L, 6) ? EVENT_ONESHOT : 0)
      | lua_tointeger(L, 7);
-    sys_get_objevent_t get_objevent = ev_flags
-     ? (sys_get_objevent_t) lua_touserdata(L, 8) : NULL;
+    sys_get_trigger_t get_trigger = ev_flags
+     ? (sys_get_trigger_t) lua_tocfunction(L, 8) : NULL;
     struct event *ev;
     int res;
 
@@ -180,7 +180,7 @@ levq_add (lua_State *L)
 	    struct event **ev_head;
 
 	    lua_pushvalue(L, 2);
-	    ev_head = (void *) get_objevent(L, &vmtd);
+	    ev_head = (void *) get_trigger(L, &vmtd);
 	    if (!ev_head) return 0;
 	    lua_pop(L, 1);
 
@@ -213,9 +213,9 @@ levq_add (lua_State *L)
 	lua_pushvalue(L, 4);
 	lua_rawseti(L, ARG_LAST+3, ev_id);
 
-	if (get_objevent) {
+	if (get_trigger) {
 	    lua_pushlightuserdata(L, (void *) ev_id);
-	    lua_pushlightuserdata(L, (void *) get_objevent);
+	    lua_pushcfunction(L, (lua_CFunction) get_trigger);
 	    lua_rawset(L, ARG_LAST+2);
 	}
 
@@ -305,7 +305,7 @@ levq_add_dirwatch (lua_State *L)
  * Returns: [ev_id (number)]
  */
 static int
-levq_add_object (lua_State *L)
+levq_add_trigger (lua_State *L)
 {
     int tblidx;
 
@@ -320,9 +320,9 @@ levq_add_object (lua_State *L)
     lua_pushinteger(L, EVENT_NOTSOCK | EVENT_TIMER
      | EVENT_OBJECT);  /* event_flags */
 
-    lua_getfield(L, tblidx, SYS_OBJEVENT_TAG);
+    lua_getfield(L, tblidx, SYS_TRIGGER_TAG);
     lua_remove(L, tblidx);
-    luaL_checktype(L, 8, LUA_TLIGHTUSERDATA);
+    luaL_checktype(L, 8, LUA_TFUNCTION);
 
     return levq_add(L);
 }
@@ -390,28 +390,28 @@ levq_del (lua_State *L)
 	if (ev->flags & EVENT_TIMER) {
 	    if (ev->flags & EVENT_OBJECT) {
 		struct event_queue *evq = event_get_evq(ev);
-		sys_get_objevent_t get_objevent;
+		sys_get_trigger_t get_trigger;
 		struct sys_vmthread *vmtd;
-		struct event **evhead;
+		struct event **ev_head;
 
 		lua_pushlightuserdata(L, (void *) ev_id);
 		/* get the function */
 		lua_pushvalue(L, -1);
 		lua_rawget(L, ARG_LAST+2);
-		get_objevent = (sys_get_objevent_t) lua_touserdata(L, -1);
+		get_trigger = (sys_get_trigger_t) lua_tocfunction(L, -1);
 		lua_pop(L, 1);
 		/* clear the function */
 		lua_pushnil(L);
 		lua_rawset(L, ARG_LAST+2);
 
 		lua_rawgeti(L, ARG_LAST+2, ev_id);
-		evhead = (void *) get_objevent(L, &vmtd);
+		ev_head = (void *) get_trigger(L, &vmtd);
 
 		if (vmtd != evq->vmtd) sys_vm2_enter(vmtd);
-		if (ev == *evhead)
-		    *evhead = ev->next_signal;
+		if (ev == *ev_head)
+		    *ev_head = ev->next_signal;
 		else {
-		    struct event *virt = *evhead;
+		    struct event *virt = *ev_head;
 		    while (virt->next_signal != ev)
 			virt = virt->next_signal;
 		    virt->next_signal = ev->next_signal;
@@ -590,13 +590,13 @@ levq_loop (lua_State *L)
 	if (ev == EVQ_FAILED)
 	    return sys_seterror(L, 0);
 
-	if (evq->object_events) {
-	    struct event *objev = (struct event *) evq->object_events;
-	    while (objev->next_ready)
-		objev = objev->next_ready;
-	    objev->next_ready = ev;
-	    ev = (struct event *) evq->object_events;
-	    evq->object_events = NULL;
+	if (evq->triggers) {
+	    struct event *tev = evq->triggers;
+	    while (tev->next_ready)
+		tev = tev->next_ready;
+	    tev->next_ready = ev;
+	    ev = evq->triggers;
+	    evq->triggers = NULL;
 	}
 
 	if (ev == NULL) {
@@ -680,19 +680,19 @@ levq_stop (lua_State *L)
 }
 
 int
-sys_trigger_objevent (sys_objevent_t *event, int flags)
+sys_trigger_notify (sys_trigger_t *trigger, int flags)
 {
     struct sys_vmthread *vmtd = sys_get_vmthread();
-    struct event *ev = (struct event *) *event;
+    struct event *ev = (struct event *) *trigger;
     struct event_queue *evq = event_get_evq(ev);
     struct event *ev_ready;
     msec_t now = 0L;
     const int deleted = (flags & SYS_EVDEL) ? EVENT_DELETE : 0;
 
-    if (deleted) *event = NULL;
+    if (deleted) *trigger = NULL;
 
     if (vmtd != evq->vmtd) sys_vm2_enter(evq->vmtd);
-    ev_ready = (struct event *) evq->object_events;
+    ev_ready = evq->triggers;
 
     do {
 	const unsigned int ev_flags = ev->flags;
@@ -723,14 +723,14 @@ sys_trigger_objevent (sys_objevent_t *event, int flags)
 
 	    /* Is the event from the same event_queue? */
 	    if (evq != cur_evq) {
-		evq->object_events = ev_ready;
+		evq->triggers = ev_ready;
 		if (vmtd != evq->vmtd) sys_vm2_leave(evq->vmtd);
 
 		evq_interrupt(evq);
 
 		evq = cur_evq;
 		if (vmtd != evq->vmtd) sys_vm2_enter(evq->vmtd);
-		ev_ready = (struct event *) evq->object_events;
+		ev_ready = evq->triggers;
 	    }
 
 	    ev->next_ready = ev_ready;
@@ -739,7 +739,7 @@ sys_trigger_objevent (sys_objevent_t *event, int flags)
 	ev = ev->next_signal;
     } while (ev);
 
-    evq->object_events = ev_ready;
+    evq->triggers = ev_ready;
     if (vmtd != evq->vmtd) sys_vm2_leave(evq->vmtd);
 
     return evq_interrupt(evq);
@@ -752,7 +752,7 @@ static luaL_reg evq_meth[] = {
     {"add_pid",		levq_add_pid},
     {"add_winmsg",	levq_add_winmsg},
     {"add_dirwatch",	levq_add_dirwatch},
-    {"add_object",	levq_add_object},
+    {"add_trigger",	levq_add_trigger},
     {"add_signal",	levq_add_signal},
     {"ignore_signal",	levq_ignore_signal},
     {"del",		levq_del},

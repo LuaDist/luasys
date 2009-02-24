@@ -39,7 +39,7 @@ do
     end
 
     local tid = assert(thread.run(consumer))
-    assert(evq:add_object(tid, thread))
+    assert(evq:add_trigger(tid, thread))
 end
 
 -- Producer Thread
@@ -52,7 +52,7 @@ do
     end
 
     local tid = assert(thread.run(producer))
-    assert(evq:add_object(tid, thread))
+    assert(evq:add_trigger(tid, thread))
 end
 
 evq:loop()  -- Wait threads termination

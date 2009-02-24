@@ -85,7 +85,7 @@ struct event_queue {
     unsigned int flags;
 
     struct sys_vmthread *vmtd;  /* for inter-vm events (eg. threads i/o) */
-    volatile struct event *object_events;  /* ready object events */
+    struct event * volatile triggers;  /* ready triggers */
 
     EVQ_EXTRA
 };

@@ -170,8 +170,8 @@ thread_msg_send (lua_State *L)
 	vmtd->buffer = buf;
 
 	/* notify event_queue */
-	if (buf.nmsg == 1 && vmtd->td.event)
-	    sys_trigger_objevent(&vmtd->td.event, SYS_EVREAD);
+	if (buf.nmsg == 1 && vmtd->td.trigger)
+	    sys_trigger_notify(&vmtd->td.trigger, SYS_EVREAD);
 
 	thread_event_signal_nolock(&vmtd->bufev);
     }

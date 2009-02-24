@@ -44,8 +44,8 @@ struct sys_thread {
     lua_State *L;
     struct sys_vmthread *vmtd;  /* vm-thread */
     thread_id_t tid;
-    volatile int interrupted;  /* thread interrupted? */
-    sys_objevent_t event;  /* notify event_queue about termination or vm-i/o */
+    int volatile interrupted;  /* thread interrupted? */
+    sys_trigger_t trigger;  /* notify event_queue about termination or vm-i/o */
 };
 
 /* Buffer for messages */
@@ -68,7 +68,7 @@ struct sys_vmthread {
     thread_critsect_t bufcs;  /* guard access to buffer */
 #endif
     thread_event_t bufev;
-    volatile struct thread_msg_buf buffer;
+    struct thread_msg_buf volatile buffer;
 };
 
 #define INVALID_TLS_INDEX	(thread_key_t) -1
@@ -77,7 +77,7 @@ struct sys_vmthread {
 static thread_key_t g_TLSIndex = INVALID_TLS_INDEX;
 
 
-void
+static void
 sys_settls (void *value)
 {
 #ifndef _WIN32
@@ -87,7 +87,7 @@ sys_settls (void *value)
 #endif
 }
 
-void *
+static void *
 sys_gettls (void)
 {
 #ifndef _WIN32
@@ -97,6 +97,12 @@ sys_gettls (void)
 #endif
 }
 
+
+void
+sys_set_vmthread (struct sys_vmthread *vmtd)
+{
+    sys_settls(vmtd);
+}
 
 struct sys_vmthread *
 sys_get_vmthread (void)
@@ -154,19 +160,10 @@ sys_vm_enter (void)
 void
 sys_vm_leave (void)
 {
-    struct sys_thread *td;
-
     if (g_TLSIndex == INVALID_TLS_INDEX)
 	return;
 
-    td = sys_gettls();
-    if (td) {
-#ifndef _WIN32
-	pthread_mutex_unlock(td->mutex);
-#else
-	ReleaseMutex(td->mutex);
-#endif
-    }
+    sys_vm2_leave(sys_gettls());
 }
 
 
@@ -248,13 +245,9 @@ vmthread_new (lua_State *L, struct sys_vmthread **vmtdp)
 
 #ifndef _WIN32
     vmtd->td.mutex = &vmtd->vmmutex;
-    {
-	const int res = pthread_mutex_init(vmtd->td.mutex, NULL);
-	if (res) {
-	    thread_event_del(&vmtd->bufev);
-	    errno = res;
-	    return -1;
-	}
+    if (thread_critsect_new(vmtd->td.mutex)) {
+	thread_event_del(&vmtd->bufev);
+	return -1;
     }
 #else
     if (thread_critsect_new(&vmtd->bufcs)) {
@@ -353,8 +346,8 @@ thread_start (struct sys_thread *td)
     }
 
     /* notify event_queue */
-    if (td->event)
-	sys_trigger_objevent(&td->event, SYS_EVEOF | SYS_EVDEL);
+    if (td->trigger)
+	sys_trigger_notify(&td->trigger, SYS_EVEOF | SYS_EVDEL);
 
     /* remove reference to self */
     lua_pushnil(L);
@@ -443,11 +436,37 @@ thread_startvm (struct sys_vmthread *vmtd)
     }
 
     /* notify event_queue */
-    if (vmtd->td.event)
-	sys_trigger_objevent(&vmtd->td.event, SYS_EVEOF | SYS_EVDEL);
+    if (vmtd->td.trigger)
+	sys_trigger_notify(&vmtd->td.trigger, SYS_EVEOF | SYS_EVDEL);
 
     lua_close(L);
     return 0;
+}
+
+static void
+thread_setfield(lua_State *L, const char *name, lua_CFunction f)
+{
+    lua_pushcfunction(L, f);
+    lua_setfield(L, -2, name);
+}
+
+static void
+thread_openlibs(lua_State *L)
+{
+    lua_cpcall(L, luaopen_base, NULL);
+    lua_cpcall(L, luaopen_package, NULL);
+
+    lua_getglobal(L, "package");
+    lua_getfield(L, -1, "preload");
+    thread_setfield(L, "io", luaopen_io);
+    thread_setfield(L, "os", luaopen_os);
+    thread_setfield(L, "table", luaopen_table);
+    thread_setfield(L, "string", luaopen_string);
+    thread_setfield(L, "math", luaopen_math);
+    thread_setfield(L, "debug", luaopen_debug);
+    lua_pop(L, 2);
+
+    luaopen_sys_thread(L);  /* create table of threads */
 }
 
 /*
@@ -473,8 +492,7 @@ thread_runvm (lua_State *L)
     NL = lua_open();
     if (!NL) goto err;
 
-    luaL_openlibs(NL);  /* open standard libraries */
-    luaopen_sys_thread(NL);  /* create table of threads */
+    thread_openlibs(NL);
 
     if (path[0] == LUA_SIGNATURE[0]
      ? luaL_loadbuffer(NL, path, lua_strlen(L, 1), "thread")
@@ -613,13 +631,13 @@ thread_self (lua_State *L)
 /*
  * Arguments: ..., thread_ludata
  */
-static sys_objevent_t *
-thread_getevent (lua_State *L, struct sys_vmthread **vmtdp)
+static sys_trigger_t *
+thread_get_trigger (lua_State *L, struct sys_vmthread **vmtdp)
 {
     struct sys_thread *td = lua_touserdata(L, -1);
 
     *vmtdp = td->vmtd;
-    return &td->event;
+    return &td->trigger;
 }
 
 
@@ -649,8 +667,8 @@ luaopen_sys_thread (lua_State *L)
     lua_pushvalue(L, -1);  /* push metatable */
     lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
     luaL_register(L, NULL, dpool_meth);
-    lua_pushlightuserdata(L, (void *) dpool_getevent);
-    lua_setfield(L, -2, SYS_OBJEVENT_TAG);
+    lua_pushcfunction(L, (lua_CFunction) dpool_get_trigger);
+    lua_setfield(L, -2, SYS_TRIGGER_TAG);
     lua_pop(L, 1);
 
     /* create table of threads */
@@ -662,7 +680,7 @@ luaopen_sys_thread (lua_State *L)
     lua_settable(L, LUA_REGISTRYINDEX);
 
     luaL_register(L, "sys.thread", thrlib);
-    lua_pushlightuserdata(L, (void *) thread_getevent);
-    lua_setfield(L, -2, SYS_OBJEVENT_TAG);
+    lua_pushcfunction(L, (lua_CFunction) thread_get_trigger);
+    lua_setfield(L, -2, SYS_TRIGGER_TAG);
     lua_pop(L, 1);
 }
