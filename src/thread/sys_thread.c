@@ -73,23 +73,25 @@ struct sys_vmthread {
 
 #define INVALID_TLS_INDEX	(thread_key_t) -1
 
-/* Global TLS index */
+/* Global Thread Local Storage Index */
 static thread_key_t g_TLSIndex = INVALID_TLS_INDEX;
 
 
-static void
-sys_settls (void *value)
+void
+sys_set_thread (struct sys_thread *td)
 {
 #ifndef _WIN32
-    pthread_setspecific(g_TLSIndex, value);
+    pthread_setspecific(g_TLSIndex, td);
 #else
-    TlsSetValue(g_TLSIndex, value);
+    TlsSetValue(g_TLSIndex, td);
 #endif
 }
 
-static void *
-sys_gettls (void)
+struct sys_thread *
+sys_get_thread (void)
 {
+    if (g_TLSIndex == INVALID_TLS_INDEX)
+	return NULL;
 #ifndef _WIN32
     return pthread_getspecific(g_TLSIndex);
 #else
@@ -98,39 +100,39 @@ sys_gettls (void)
 }
 
 
-void
-sys_set_vmthread (struct sys_vmthread *vmtd)
+struct sys_thread *
+sys_get_vmthread (struct sys_thread *td)
 {
-    sys_settls(vmtd);
+    return td ? (struct sys_thread *) td->vmtd : NULL;
 }
 
-struct sys_vmthread *
-sys_get_vmthread (void)
+struct lua_State *
+sys_lua_tothread (struct sys_thread *td)
 {
-    struct sys_thread *td = sys_gettls();
-    return td ? td->vmtd : NULL;
+    return td ? td->L : NULL;
 }
 
+
 void
-sys_vm2_enter (struct sys_vmthread *vmtd)
+sys_vm2_enter (struct sys_thread *td)
 {
-    if (vmtd) {
+    if (td) {
 #ifndef _WIN32
-	pthread_mutex_lock(vmtd->td.mutex);
+	pthread_mutex_lock(td->mutex);
 #else
-	WaitForSingleObject(vmtd->td.mutex, INFINITE);
+	WaitForSingleObject(td->mutex, INFINITE);
 #endif
     }
 }
 
 void
-sys_vm2_leave (struct sys_vmthread *vmtd)
+sys_vm2_leave (struct sys_thread *td)
 {
-    if (vmtd) {
+    if (td) {
 #ifndef _WIN32
-	pthread_mutex_unlock(vmtd->td.mutex);
+	pthread_mutex_unlock(td->mutex);
 #else
-	ReleaseMutex(vmtd->td.mutex);
+	ReleaseMutex(td->mutex);
 #endif
     }
 }
@@ -143,17 +145,12 @@ sys_vm_enter (void)
     if (g_TLSIndex == INVALID_TLS_INDEX)
 	return;
 
-    td = sys_gettls();
-    if (td) {
-#ifndef _WIN32
-	pthread_mutex_lock(td->mutex);
-#else
-	WaitForSingleObject(td->mutex, INFINITE);
-#endif
-	if (td->interrupted) {
-	    lua_pushlightuserdata(td->L, &g_TLSIndex);
-	    lua_error(td->L);
-	}
+    td = sys_get_thread();
+    sys_vm2_enter(td);
+
+    if (td && td->interrupted) {
+	lua_pushlightuserdata(td->L, &g_TLSIndex);
+	lua_error(td->L);
     }
 }
 
@@ -163,7 +160,7 @@ sys_vm_leave (void)
     if (g_TLSIndex == INVALID_TLS_INDEX)
 	return;
 
-    sys_vm2_leave(sys_gettls());
+    sys_vm2_leave(sys_get_thread());
 }
 
 
@@ -174,56 +171,55 @@ static void
 thread_settable (lua_State *L, lua_State *NL, thread_id_t tid)
 {
     lua_pushlightuserdata(L, &g_TLSIndex);
-    lua_gettable(L, LUA_REGISTRYINDEX);
+    lua_rawget(L, LUA_REGISTRYINDEX);
 
     lua_pushlightuserdata(L, NL);
-    lua_pushvalue(L, -3);  /* thread */
-    lua_settable(L, -3);
+    lua_pushvalue(L, -4);  /* thread */
+    lua_rawset(L, -3);
 
     lua_pushnumber(L, (unsigned long) tid);
     lua_pushvalue(L, -3); /* thread_udata */
-    /* set metatable for vm-mutex destructor */
-    if (L == NL && !lua_isnil(L, -1)) {
-	lua_pushvalue(L, -3);
-	lua_setmetatable(L, -2);
-    }
-    lua_settable(L, -3);
+    lua_rawset(L, -3);
 
     lua_pop(L, 3);
 }
 
 
-lua_State *
-sys_newthread (lua_State *L, struct sys_vmthread *vmtd)
+struct sys_thread *
+sys_new_thread (struct sys_thread *td)
 {
+    lua_State *L = td->L;
     lua_State *NL;
-    struct sys_thread *td;
+    struct sys_thread *ntd;
 
     NL = lua_newthread(L);
     if (!NL) return NULL;
 
-    td = lua_newuserdata(L, sizeof(struct sys_thread));
-    memset(td, 0, sizeof(struct sys_thread));
-    td->mutex = vmtd->td.mutex;
-    td->L = NL;
-    td->vmtd = vmtd;
+    ntd = lua_newuserdata(L, sizeof(struct sys_thread));
+    memset(ntd, 0, sizeof(struct sys_thread));
+    ntd->mutex = td->mutex;
+    ntd->L = NL;
+    ntd->vmtd = td->vmtd;
+    ntd->tid = thread_getid();
 
-    thread_settable(L, NL, td->tid);  /* save thread to avoid GC */
-    sys_settls(td);
-    return NL;
+    thread_settable(L, NL, ntd->tid);  /* save thread to avoid GC */
+    return ntd;
 }
 
-void
-sys_delthread (lua_State *L)
+struct sys_thread *
+sys_del_thread (struct sys_thread *td)
 {
-    struct sys_thread *td = sys_gettls();
+    lua_State *L = td->L;
+    const thread_id_t tid = td->tid;
+
+    td = (struct sys_thread *) td->vmtd;
 
     /* remove reference to self */
     lua_pushnil(L);
     lua_pushnil(L);
-    thread_settable(L, L, td->tid);
+    thread_settable(L, L, tid);
 
-    sys_settls(NULL);
+    return td;
 }
 
 
@@ -239,6 +235,16 @@ vmthread_new (lua_State *L, struct sys_vmthread **vmtdp)
     vmtd->td.L = L;
     vmtd->td.tid = thread_getid();
     vmtd->td.vmtd = vmtd;
+
+    /* vm-mutex destructor */
+    lua_pushlightuserdata(L, &g_TLSIndex);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    lua_pushvalue(L, -1);
+    lua_setmetatable(L, -3);
+    lua_pushlightuserdata(L, vmtd);
+    lua_pushvalue(L, -3);  /* thread_udata */
+    lua_rawset(L, -3);
+    lua_pop(L, 1);
 
     if (thread_event_new(&vmtd->bufev))
 	return -1;
@@ -296,7 +302,7 @@ vmthread_del (lua_State *L)
 static int
 thread_init (lua_State *L)
 {
-    struct sys_vmthread *vmtd;
+    struct sys_thread *td;
 
     /* TLS Index */
     if (g_TLSIndex == INVALID_TLS_INDEX) {
@@ -312,16 +318,16 @@ thread_init (lua_State *L)
 #endif
     }
     /* VM Mutex */
-    vmtd = sys_gettls();
-    if (!vmtd) {
-	if (vmthread_new(L, &vmtd))
+    td = sys_get_thread();
+    if (!td) {
+	if (vmthread_new(L, (void *) &td))
 	    goto err;
 
-	thread_settable(L, L, vmtd->td.tid);
-	sys_settls(vmtd);
-	sys_vm_enter();
+	thread_settable(L, L, td->tid);
+	sys_set_thread(td);
+	sys_vm2_enter(td);
     }
-    lua_pushlightuserdata(L, vmtd);
+    lua_pushlightuserdata(L, td->vmtd);
     return 1;
  err:
     return sys_seterror(L, 0);
@@ -335,9 +341,9 @@ thread_start (struct sys_thread *td)
 {
     lua_State *L = td->L;
 
-    sys_settls(td);
+    sys_set_thread(td);
+    sys_vm2_enter(td);
 
-    sys_vm_enter();
     if (lua_pcall(L, lua_gettop(L) - 1, 0, 0)) {
 	if (td->interrupted && lua_touserdata(L, -1) == &g_TLSIndex)
 	    lua_pop(L, 1);
@@ -350,11 +356,9 @@ thread_start (struct sys_thread *td)
 	sys_trigger_notify(&td->trigger, SYS_EVEOF | SYS_EVDEL);
 
     /* remove reference to self */
-    lua_pushnil(L);
-    lua_pushnil(L);
-    thread_settable(L, L, td->tid);
+    td = sys_del_thread(td);
 
-    sys_vm_leave();
+    sys_vm2_leave(td);
     return 0;
 }
 
@@ -365,7 +369,7 @@ thread_start (struct sys_thread *td)
 static int
 thread_run (lua_State *L)
 {
-    struct sys_vmthread *vmtd = sys_gettls();
+    struct sys_thread *vmtd = sys_get_thread();
     lua_State *NL;
     struct sys_thread *td;
 #ifndef _WIN32
@@ -384,9 +388,9 @@ thread_run (lua_State *L)
 
     td = lua_newuserdata(L, sizeof(struct sys_thread));
     memset(td, 0, sizeof(struct sys_thread));
-    td->mutex = vmtd->td.mutex;
+    td->mutex = vmtd->mutex;
     td->L = NL;
-    td->vmtd = vmtd;
+    td->vmtd = vmtd->vmtd;
 
 #ifndef _WIN32
     if ((res = pthread_attr_init(&attr))
@@ -394,15 +398,16 @@ thread_run (lua_State *L)
 	goto err;
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-    res = pthread_create(&td->tid, &attr, (void *(*) (void *)) thread_start, td);
+    res = pthread_create(&td->tid, &attr,
+     (void *(*) (void *)) thread_start, td);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
-    hThr = (HANDLE) _beginthreadex(NULL, THREAD_STACK_SIZE, thread_start, td, 0, &td->tid);
+    hThr = (HANDLE) _beginthreadex(NULL, THREAD_STACK_SIZE,
+     thread_start, td, 0, &td->tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif
-	/* New thread blocked in sys_vm_enter */
 	thread_settable(L, NL, td->tid);  /* save thread to avoid GC */
 	lua_xmove(L, NL, lua_gettop(L));  /* move function and args to NL */
 
@@ -420,24 +425,25 @@ thread_run (lua_State *L)
  *	thread, thread_udata
  */
 static THREAD_FUNC_API
-thread_startvm (struct sys_vmthread *vmtd)
+thread_startvm (struct sys_thread *td)
 {
-    lua_State *L = vmtd->td.L;
+    lua_State *L = td->L;
 
-    thread_settable(L, L, vmtd->td.tid);
-    sys_settls(vmtd);
-    sys_vm_enter();
+    thread_settable(L, L, td->tid);
+
+    sys_set_thread(td);
+    sys_vm2_enter(td);
 
     if (lua_pcall(L, lua_gettop(L) - 1, 0, 0)) {
-	if (vmtd->td.interrupted && lua_touserdata(L, -1) == &g_TLSIndex)
+	if (td->interrupted && lua_touserdata(L, -1) == &g_TLSIndex)
 	    lua_pop(L, 1);
 	else
 	    lua_error(L);
     }
 
     /* notify event_queue */
-    if (vmtd->td.trigger)
-	sys_trigger_notify(&vmtd->td.trigger, SYS_EVEOF | SYS_EVDEL);
+    if (td->trigger)
+	sys_trigger_notify(&td->trigger, SYS_EVEOF | SYS_EVDEL);
 
     lua_close(L);
     return 0;
@@ -479,7 +485,7 @@ thread_runvm (lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
     lua_State *NL = NULL;
-    struct sys_vmthread *vmtd = sys_gettls();
+    struct sys_vmthread *vmtd = (struct sys_vmthread *) sys_get_thread();
 #ifndef _WIN32
     pthread_attr_t attr;
 #else
@@ -536,11 +542,13 @@ thread_runvm (lua_State *L)
     if (res) goto err;
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-    res = pthread_create(&vmtd->td.tid, &attr, (void *(*) (void *)) thread_startvm, vmtd);
+    res = pthread_create(&vmtd->td.tid, &attr,
+     (void *(*) (void *)) thread_startvm, vmtd);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
-    hThr = (HANDLE) _beginthreadex(NULL, 0, thread_startvm, vmtd, 0, &vmtd->td.tid);
+    hThr = (HANDLE) _beginthreadex(NULL, 0,
+     thread_startvm, vmtd, 0, &vmtd->td.tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif
@@ -619,7 +627,7 @@ thread_sleep (lua_State *L)
 static int
 thread_self (lua_State *L)
 {
-    struct sys_thread *td = sys_gettls();
+    struct sys_thread *td = sys_get_thread();
 
     if (!td) return 0;
 
@@ -677,7 +685,7 @@ luaopen_sys_thread (lua_State *L)
     lua_pushliteral(L, "__gc");  /* mutex destructor */
     lua_pushcfunction(L, vmthread_del);
     lua_rawset(L, -3);
-    lua_settable(L, LUA_REGISTRYINDEX);
+    lua_rawset(L, LUA_REGISTRYINDEX);
 
     luaL_register(L, "sys.thread", thrlib);
     lua_pushcfunction(L, (lua_CFunction) thread_get_trigger);

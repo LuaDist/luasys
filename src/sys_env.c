@@ -25,11 +25,12 @@ sys_getenv (lua_State *L)
     if (len) {
 	buf = malloc(len);
 	--len;  /* not including term. zero */
-	if (buf && GetEnvironmentVariable(name, buf, (len + 1)) == len) {
+	if (buf && GetEnvironmentVariable(name, buf, len + 1) == len) {
 	    lua_pushlstring(L, buf, len);
 	    free(buf);
 	    return 1;
 	}
+	free(buf);
     }
     return sys_seterror(L, 0);
 #endif
@@ -46,8 +47,12 @@ sys_setenv (lua_State *L)
     const char *value = lua_tostring(L, 2);
 
 #ifndef _WIN32
-    if ((!value && (unsetenv(name), 1))
-     || !setenv(name, value, 1)) {
+    if (!(value ? setenv(name, value, 1)
+#if defined(__linux__)
+     : unsetenv(name))) {
+#else
+     : ((void) unsetenv(name), 0))) {
+#endif
 #else
     if (SetEnvironmentVariable(name, value)) {
 #endif

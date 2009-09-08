@@ -7,19 +7,27 @@
  * Arguments: membuf_udata, ...
  */
 static int
-write_stream (lua_State *L, struct membuf *mb)
+stream_write (lua_State *L, struct membuf *mb)
 {
+    const int bufio = (mb->flags & SYSMEM_OSTREAM_BUFIO);
+    int res;
+
     lua_getfenv(L, 1);
-    lua_rawgeti(L, -1, (int) mb);
+    lua_rawgeti(L, -1, SYSMEM_OUTPUT);  /* stream object */
     lua_getfield(L, -1, "write");
-    lua_pushvalue(L, -2);  /* stream object */
-    lua_pushlstring(L, mb->data, mb->offset);
+    lua_insert(L, -2);
+
+    if (bufio)
+	lua_pushvalue(L, 1);
+    else
+	lua_pushlstring(L, mb->data, mb->offset);
     lua_call(L, 2, 1);
-    if (lua_toboolean(L, -1)) {
-	mb->offset = 0;
-	return 1;
-    }
-    return 0;
+
+    res = lua_toboolean(L, -1);
+    lua_pop(L, 2);  /* pop environ. and result */
+
+    if (res && !bufio) mb->offset = 0;
+    return res;
 }
 
 static int
@@ -32,18 +40,17 @@ membuf_addlstring (lua_State *L, struct membuf *mb, const char *s, size_t n)
 	const unsigned int flags = mb->flags;
 	void *p;
 
-	if ((flags & SYSMEM_BUFFLUSH) && write_stream(L, mb)) {
-	    offset = 0;
-	    if (n < len) goto end;
-	    newlen = n;
-	} else {
-	    while ((len *= 2) <= newlen)
-		continue;
-	    newlen = len;
+	if ((flags & SYSMEM_OSTREAM) && stream_write(L, mb)) {
+	    offset = mb->offset;
+	    len = mb->len;
+	    if (n < len - offset)
+		goto end;
 	}
-	if (!(flags & SYSMEM_ALLOC) || !(p = realloc(mb->data, newlen)))
+	while ((len *= 2) <= newlen)
+	    continue;
+	if (!(flags & SYSMEM_ALLOC) || !(p = realloc(mb->data, len)))
 	    return 0;
-	mb->len = newlen;
+	mb->len = len;
 	mb->data = p;
     }
  end:
@@ -86,17 +93,16 @@ membuf_writeln (lua_State *L)
 }
 
 /*
- * Arguments: membuf_udata, [take (boolean)]
+ * Arguments: membuf_udata, [num_bytes (number)]
  * Returns: string
  */
 static int
-membuf_getstring (lua_State *L)
+membuf_tostring (lua_State *L)
 {
     struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-    const int take = lua_toboolean(L, 2);
+    const int len = luaL_optinteger(L, 2, mb->offset);
 
-    lua_pushlstring(L, mb->data, mb->offset);
-    if (take) mb->offset = 0;
+    lua_pushlstring(L, mb->data, len);
     return 1;
 }
 
@@ -117,25 +123,49 @@ membuf_seek (lua_State *L)
     return 1;
 }
 
+
+/*
+ * Arguments: membuf_udata, stream
+ */
+static int
+membuf_assosiate (lua_State *L, int type)
+{
+    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
+    const int idx = (type == SYSMEM_ISTREAM) ? SYSMEM_INPUT : SYSMEM_OUTPUT;
+
+    lua_settop(L, 2);
+    if (lua_isnoneornil(L, 2))
+	mb->flags &= ~type;
+    else {
+	mb->flags |= type;
+
+	lua_getfield(L, -1, SYS_BUFIO_META);
+	if (!lua_isnil(L, -1)) {
+	    mb->flags |= (type == SYSMEM_ISTREAM)
+	     ? SYSMEM_ISTREAM_BUFIO : SYSMEM_OSTREAM_BUFIO;
+	}
+	lua_pop(L, 1);
+    }
+
+    lua_getfenv(L, 1);
+    if (!lua_istable(L, -1)) {
+	lua_pop(L, 1);
+	lua_newtable(L);
+	lua_pushvalue(L, -1);
+	lua_setfenv(L, 1);
+    }
+    lua_pushvalue(L, 2);
+    lua_rawseti(L, -2, idx);
+    return 0;
+}
+
 /*
  * Arguments: membuf_udata, consumer_stream
  */
 static int
 membuf_output (lua_State *L)
 {
-    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-
-    if (lua_isnoneornil(L, 2))
-	mb->flags &= ~(SYSMEM_BUFFLUSH | SYSMEM_OSTREAM);
-    else
-	mb->flags |= SYSMEM_BUFFLUSH | SYSMEM_OSTREAM;
-
-    lua_settop(L, 2);
-    lua_getfenv(L, 1);
-    lua_rawgeti(L, -1, 0);  /* output streams */
-    lua_pushvalue(L, 2);
-    lua_rawseti(L, -2, (int) mb);
-    return 0;
+    return membuf_assosiate(L, SYSMEM_OSTREAM);
 }
 
 /*
@@ -144,30 +174,31 @@ membuf_output (lua_State *L)
 static int
 membuf_input (lua_State *L)
 {
-    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-
-    if (lua_isnoneornil(L, 2))
-	mb->flags &= SYSMEM_ISTREAM;
-    else
-	mb->flags |= SYSMEM_ISTREAM;
-
-    lua_settop(L, 2);
-    lua_getfenv(L, 1);  /* input streams */
-    lua_pushvalue(L, 2);
-    lua_rawseti(L, -2, (int) mb);
-    return 0;
+    return membuf_assosiate(L, SYSMEM_ISTREAM);
 }
 
+
+/*
+ * Arguments: membuf_udata, ..., stream, function
+ * Returns: [boolean]
+ */
 static void
-read_stream (lua_State *L, int n)
+stream_read (lua_State *L, size_t l, const int bufio)
 {
+    int nargs = 1;
+
     lua_pushvalue(L, -2);
     lua_pushvalue(L, -2);
-    if (n == -1)
-	lua_pushnil(L);
-    else
-	lua_pushinteger(L, n);
-    lua_call(L, 2, 1);
+
+    if (bufio) {
+	lua_pushvalue(L, 1);
+	++nargs;
+    }
+    if (l != (size_t) -1) {
+	lua_pushinteger(L, l);
+	++nargs;
+    }
+    lua_call(L, nargs, 1);
 }
 
 static int
@@ -176,7 +207,7 @@ read_bytes (lua_State *L, struct membuf *mb, size_t l)
     int n = mb->offset;
 
     if (!n && (mb->flags & SYSMEM_ISTREAM)) {
-	read_stream(L, l);
+	stream_read(L, l, (mb->flags & SYSMEM_ISTREAM_BUFIO));
 	return 1;
     }
 
@@ -212,13 +243,12 @@ read_line (lua_State *L, struct membuf *mb)
 	goto end;
     }
     for (; ; ) {
-	read_stream(L, SYSMEM_BUFLINE);
-	n = lua_strlen(L, -1);
+	stream_read(L, SYSMEM_BUFLINE, 0);
+	s = lua_tolstring(L, -1, &n);
 	if (!n) {
 	    n = 1;
 	    break;
 	}
-	s = lua_tostring(L, -1);
 	if (*s == '\n')
 	    break;
 	nl = memchr(s + 1, '\n', n - 1);
@@ -253,10 +283,10 @@ membuf_read (lua_State *L)
 
     lua_settop(L, 2);
     if (mb->flags & SYSMEM_ISTREAM) {
-	lua_getfenv(L, 1);  /* input streams */
-	lua_rawgeti(L, -1, (int) mb);
+	lua_getfenv(L, 1);
+	lua_rawgeti(L, -1, SYSMEM_INPUT);  /* stream object */
 	lua_getfield(L, -1, "read");
-	lua_pushvalue(L, -2);  /* stream object */
+	lua_insert(L, -2);
     }
 
     if (lua_type(L, 2) == LUA_TNUMBER)
@@ -278,17 +308,22 @@ membuf_read (lua_State *L)
 }
 
 /*
- * Arguments: membuf_udata
- * Returns: [boolean]
+ * Arguments: membuf_udata, [close (boolean)]
+ * Returns: [membuf_udata]
  */
 static int
 membuf_flush (lua_State *L)
 {
     struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
+    const int is_close = lua_toboolean(L, 2);
+    int res = 1;
 
-    if (mb->flags & SYSMEM_BUFFLUSH)
-	write_stream(L, mb);
-    return 1;
+    if (mb->flags & SYSMEM_OSTREAM) {
+	res = stream_write(L, mb);
+	if (is_close) mem_free(L);
+    }
+    lua_settop(L, 1);
+    return res;
 }
 
 /*
@@ -298,15 +333,7 @@ membuf_flush (lua_State *L)
 static int
 membuf_close (lua_State *L)
 {
-    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-    int res = 1;
-
-    if (mb->data) {
-	if (mb->flags & SYSMEM_BUFFLUSH)
-	    res = write_stream(L, mb);
-	mem_free(L);
-    }
-    return res;
+    lua_pushboolean(L, 1);
+    return membuf_flush(L);
 }
-
 

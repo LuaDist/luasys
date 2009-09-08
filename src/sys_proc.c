@@ -248,7 +248,7 @@ sys_getpid (lua_State *L)
 static int
 sys_pid (lua_State *L)
 {
-    lua_boxpointer(L, (void *) -1);
+    lua_boxinteger(L, -1);
     luaL_getmetatable(L, PID_TYPENAME);
     lua_setmetatable(L, -2);
     return 1;
@@ -280,7 +280,7 @@ proc_close (lua_State *L)
 static int
 proc_wait (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxpointer(L, 1, PID_TYPENAME);
+    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
 
 #ifndef _WIN32
     int status;
@@ -305,7 +305,7 @@ proc_wait (lua_State *L)
 static int
 proc_kill (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxpointer(L, 1, PID_TYPENAME);
+    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
 #ifndef _WIN32
     const int signo = sig_flags[luaL_checkoption(L, 2, "TERM", sig_names)];
 #endif
@@ -331,7 +331,7 @@ proc_kill (lua_State *L)
 static int
 proc_tostring (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxpointer(L, 1, PID_TYPENAME);
+    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
 
     if (pid != (fd_t) -1)
 	lua_pushfstring(L, PID_TYPENAME " (%d)", (int) pid);

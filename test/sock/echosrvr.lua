@@ -59,9 +59,9 @@ local function accept(evq, evid, fd)
     if DEBUG then
 	peer = sock.addr_in()
     end
-    local newfd = fd:accept(peer)
+    local newfd = sock.handle()
 
-    if newfd then
+    if fd:accept(newfd, peer) then
 	chan_insert(evq, newfd, process)
 
 	if DEBUG then
@@ -74,17 +74,16 @@ local function accept(evq, evid, fd)
     end
 end
 
-local evq = sys.event_queue()
-if not evq then error(errorMessage) end
+local evq = assert(sys.event_queue())
 
 print("Binding servers...")
 for port, host in pairs(bind) do
     local fd = sock.handle()
-    assert(fd:socket(), "Create socket")
-    assert(fd:sockopt("reuseaddr", 1), "Reuse address")
+    assert(fd:socket())
+    assert(fd:sockopt("reuseaddr", 1))
     local addr = sock.inet_aton(host)
-    assert(fd:bind(sock.addr_in(port, addr)), "Bind")
-    assert(fd:listen(), "Listen")
+    assert(fd:bind(sock.addr_in(port, addr)))
+    assert(fd:listen())
     chan_insert(evq, fd, accept)
 end
 

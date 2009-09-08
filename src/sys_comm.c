@@ -16,13 +16,13 @@
  *	character_size (string: "cs5".."cs8"),
  *	parity (string: "parno", "parodd", "pareven"),
  *	stop_bits (string: "sb1", "sb2"),
- *	flow_controls (string: "frtscts", "fxout", "fxin")]
+ *	flow_controls (string: "foff", "frtscts", "fxio")]
  * Returns: [fd_udata]
  */
 static int
 sys_comm_init (lua_State *L)
 {
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
     int i;
 
@@ -47,10 +47,10 @@ sys_comm_init (lua_State *L)
 #ifndef _WIN32
 	    switch (baud_rate) {
 	    case 9600: flag = B9600; break;
+	    case 19200: flag = B19200; break;
 	    case 38400: flag = B38400; break;
 	    case 57600: flag = B57600; break;
 	    case 115200: flag = B115200; break;
-	    /* default: hang up */
 	    }
 	    if (cfsetispeed(&tio, flag) == -1
 	     || cfsetospeed(&tio, flag) == -1)
@@ -114,22 +114,31 @@ sys_comm_init (lua_State *L)
 #endif
 		break;
 	    case 'f':  /* flow controls */
+		/* off */
+#ifndef _WIN32
+		mask = CRTSCTS;
+		tio.c_iflag &= ~(IXON | IXOFF | IXANY);
+#else
+		dcb.fOutX = dcb.fInX = 0;
+		dcb.fRtsControl = RTS_CONTROL_DISABLE;
+		dcb.fOutxCtsFlow = 0;
+#endif
 		switch (opt[1]) {
 		case 'x':  /* XON/XOFF */
 #ifndef _WIN32
-		    tio.c_iflag |= (*endp == 't') ? IXON : IXOFF;
+		    tio.c_iflag |= (IXON | IXOFF | IXANY);
 #else
-		    if (*endp == 't') dcb.fOutX = 1;
-		    else dcb.fInX = 1;
+		    dcb.fOutX = dcb.fInX = 1;
 #endif
-		    continue;
-		default:  /* RTS/CTS */
+		    break;
+		case 'r':  /* RTS/CTS */
 #ifndef _WIN32
 		    flag = CRTSCTS;
-		    mask = 0;
 #else
-		    dcb.fRtsControl = dcb.fOutxCtsFlow = 1;
+		    dcb.fRtsControl = RTS_CONTROL_HANDSHAKE;
+		    dcb.fOutxCtsFlow = 1;
 #endif
+		    break;
 		}
 		break;
 	    }
@@ -160,7 +169,7 @@ sys_comm_init (lua_State *L)
 static int
 sys_comm_control (lua_State *L)
 {
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
     int i;
 
@@ -226,7 +235,7 @@ sys_comm_control (lua_State *L)
 static int
 sys_comm_timeout (lua_State *L)
 {
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rtime = lua_tointeger(L, 2);
 
 #ifndef _WIN32
@@ -264,7 +273,7 @@ static int
 sys_comm_queues (lua_State *L)
 {
 #ifdef _WIN32
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rqueue = lua_tointeger(L, 2);
     const int wqueue = lua_tointeger(L, 3);
 
@@ -285,7 +294,7 @@ sys_comm_queues (lua_State *L)
 static int
 sys_comm_purge (lua_State *L)
 {
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const char *mode = lua_tostring(L, 2);
     int flags;
 
@@ -307,7 +316,7 @@ sys_comm_purge (lua_State *L)
 }
 
 
-#if DO_NOT_COMPILE  /* TODO: Integrate to event/win32 */
+#if 0  /* TODO: Integrate to event/win32 */
 /*
  * Arguments: fd_udata, [mode (string: "r", "w", "rw")]
  * Returns: read (boolean), write (boolean), timeout (boolean)
@@ -315,7 +324,7 @@ sys_comm_purge (lua_State *L)
 static int
 sys_comm_wait (lua_State *L)
 {
-    const fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const char *mode = lua_tostring(L, 2);
     int flags;
 

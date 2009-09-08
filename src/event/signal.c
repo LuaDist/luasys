@@ -10,7 +10,7 @@ static struct event *g_SigEvents[NSIG];
 static void
 signal_handler (int signo)
 {
-#ifdef HAVE_KQUEUE
+#ifdef USE_KQUEUE
     (void) signo;
 #else
     const struct event *ev = g_SigEvents[signo];
@@ -29,7 +29,7 @@ evq_interrupt (struct event_queue *evq)
 {
     const int signo = SYS_SIGINTR;
 
-#ifdef HAVE_KQUEUE
+#ifdef USE_KQUEUE
     (void) evq;
     return kill(getpid(), signo);
 #else
@@ -59,7 +59,7 @@ signal_set (int signo, sig_handler_t func)
     return res;
 }
 
-#ifdef HAVE_KQUEUE
+#ifdef USE_KQUEUE
 static int
 signal_kqueue (struct event_queue *evq, int signo, int action)
 {
@@ -80,7 +80,7 @@ signal_kqueue (struct event_queue *evq, int signo, int action)
 int
 evq_ignore_signal (struct event_queue *evq, int signo, int ignore)
 {
-#ifndef HAVE_KQUEUE
+#ifndef USE_KQUEUE
     (void) evq;
 #else
     if (signal_kqueue(evq, signo, ignore ? EV_DELETE : EV_ADD))
@@ -99,7 +99,7 @@ signal_add (struct event_queue *evq, struct event *ev)
     if (*sig_evp)
 	ev->next_signal = *sig_evp;
     else {
-#ifdef HAVE_KQUEUE
+#ifdef USE_KQUEUE
 	if (signal_kqueue(evq, signo, EV_ADD))
 	    return -1;
 #endif
@@ -122,7 +122,7 @@ signal_del (struct event_queue *evq, struct event *ev)
 	if (!(*sig_evp = ev->next_signal)) {
 	    int res = 0;
 
-#ifndef HAVE_KQUEUE
+#ifndef USE_KQUEUE
 	    (void) evq;
 #else
 	    res |= signal_kqueue(evq, signo, EV_DELETE);
@@ -186,7 +186,7 @@ signal_children (struct event *ev_ready, msec_t timeout)
     }
 }
 
-#ifndef HAVE_KQUEUE
+#ifndef USE_KQUEUE
 static struct event *
 signal_process (struct event_queue *evq, struct event *ev_ready, msec_t timeout)
 {
@@ -215,6 +215,5 @@ signal_process (struct event_queue *evq, struct event *ev_ready, msec_t timeout)
 	    }
 	}
     }
-    return ev_ready;
 }
 #endif

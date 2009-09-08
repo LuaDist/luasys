@@ -11,15 +11,15 @@
 
 #else
 
-#ifdef __linux
+#if defined(__linux__)
 #define O_FSYNC		O_SYNC
 #endif
 
 static const int fdopt_flags[] = {
-    O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_FSYNC, O_NOCTTY
+    O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_NOCTTY, O_FSYNC
 };
 static const char *const fdopt_names[] = {
-    "creat", "excl", "trunc", "append", "nonblock", "sync", "noctty",
+    "creat", "excl", "trunc", "append", "nonblock", "noctty", "sync",
     NULL
 };
 
@@ -32,7 +32,7 @@ static const char *const fdopt_names[] = {
 static int
 sys_file (lua_State *L)
 {
-    lua_boxpointer(L, (void *) -1);
+    lua_boxinteger(L, -1);
     luaL_getmetatable(L, FD_TYPENAME);
     lua_setmetatable(L, -2);
     return 1;
@@ -50,7 +50,7 @@ sys_open (lua_State *L)
     const char *pathname = luaL_checkstring(L, 2);
     const char *mode = lua_tostring(L, 3);
 #ifndef _WIN32
-    mode_t perm = (mode_t) lua_tonumber(L, 4);
+    mode_t perm = (mode_t) lua_tointeger(L, 4);
 #else
     int append = 0;
 #endif
@@ -115,8 +115,9 @@ sys_open (lua_State *L)
     if (fd != (fd_t) -1) {
 	*fdp = fd;
 #ifdef _WIN32
-	if (append)
-	    SetFilePointer(fd, 0, NULL, FILE_END);
+	if (append) {
+	    SetFilePointer(fd, 0, NULL, SEEK_END);
+	}
 #endif
 	lua_settop(L, 1);
 	return 1;
@@ -134,14 +135,14 @@ sys_create (lua_State *L)
     fd_t fd, *fdp = checkudata(L, 1, FD_TYPENAME);
     const char *pathname = luaL_checkstring(L, 2);
 #ifndef _WIN32
-    mode_t perm = (mode_t) lua_tonumber(L, 3);
+    mode_t perm = (mode_t) lua_tointeger(L, 3);
 #endif
 
     sys_vm_leave();
 #ifndef _WIN32
     fd = creat(pathname, perm);
 #else
-    fd = CreateFile(pathname, O_RDWR, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    fd = CreateFile(pathname, O_WRONLY, FILE_SHARE_READ | FILE_SHARE_WRITE,
      NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
      | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
 #endif
@@ -292,7 +293,7 @@ sys_dispose (lua_State *L)
 static int
 sys_set_std (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const char *stream = luaL_checkstring(L, 2);
     int dst;
 
@@ -323,24 +324,33 @@ sys_set_std (lua_State *L)
 static int
 sys_seek (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
-    off_t offset = (off_t) lua_tonumber(L, 2);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+    const lua_Number offset = lua_tonumber(L, 2);
+    int64_t off = (int64_t) offset;  /* to avoid warning */
     const char *whencep = lua_tostring(L, 3);
-    int whence = SEEK_SET;
+    int whence = SEEK_CUR;
 
     /* SEEK_* and FILE_* (win32) are equal */
-    if (whencep)
+    if (whencep) {
 	switch (whencep[0]) {
-	case 'c': whence = SEEK_CUR; break;
+	case 's': whence = SEEK_SET; break;
 	case 'e': whence = SEEK_END; break;
 	}
+    }
 #ifndef _WIN32
-    offset = lseek(fd, offset, whence);
+    off = lseek(fd, off, whence);
 #else
-    offset = SetFilePointer(fd, offset, NULL, whence);
+    {
+	LONG off_hi = INT64_HIGH(off);
+	LONG off_lo = INT64_LOW(off);
+
+	off_lo = SetFilePointer(fd, off_lo, &off_hi, whence);
+	off = (off_lo == -1L && SYS_ERRNO != NO_ERROR) ? (int64_t) -1
+	 : INT64_MAKE(off_lo, off_hi);
+    }
 #endif
-    if (offset != (off_t) -1) {
-	lua_pushnumber(L, offset);
+    if (off != (int64_t) -1) {
+	lua_pushnumber(L, (lua_Number) off);
 	return 1;
     }
     return sys_seterror(L, 0);
@@ -353,23 +363,27 @@ sys_seek (lua_State *L)
 static int
 sys_set_end (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
-    off_t off = (off_t) lua_tonumber(L, 2);
-
-#ifndef _WIN32
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+    const lua_Number offset = lua_tonumber(L, 2);
+    const int64_t off = (int64_t) offset;  /* to avoid warning */
     int res;
 
+#ifndef _WIN32
     do res = ftruncate(fd, off);
     while (res == -1 && SYS_ERRNO == EINTR);
     if (!res) {
 #else
     {
-	off_t cur = SetFilePointer(fd, 0, NULL, FILE_CURRENT);
-	SetFilePointer(fd, off, NULL, FILE_BEGIN);
-	off = SetEndOfFile(fd);
-	SetFilePointer(fd, cur, NULL, FILE_BEGIN);
+	LONG off_hi = INT64_HIGH(off);
+	LONG off_lo = INT64_LOW(off);
+	LONG cur_hi = 0L, cur_lo = 0L;
+
+	cur_lo = SetFilePointer(fd, 0L, &cur_hi, SEEK_CUR);
+	SetFilePointer(fd, off_lo, &off_hi, SEEK_SET);
+	res = SetEndOfFile(fd);
+	SetFilePointer(fd, cur_lo, &cur_hi, SEEK_SET);
     }
-    if (off) {
+    if (res) {
 #endif
 	lua_settop(L, 1);
 	return 1;
@@ -385,10 +399,12 @@ sys_set_end (lua_State *L)
 static int
 sys_lock (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
-    off_t off = (off_t) lua_tonumber(L, 2);
-    size_t len = (size_t) lua_tonumber(L, 3);
-    int locking = lua_isboolean(L, -1) && lua_toboolean(L, -1);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+    const lua_Number offset = lua_tonumber(L, 2);
+    const int64_t off = (int64_t) offset;  /* to avoid warning */
+    const lua_Number length = lua_tonumber(L, 3);
+    const int64_t len = (int64_t) length;  /* to avoid warning */
+    const int locking = lua_isboolean(L, -1) && lua_toboolean(L, -1);
     int res;
 
 #ifndef _WIN32
@@ -407,8 +423,15 @@ sys_lock (lua_State *L)
     if (res != -1) {
 #else
     sys_vm_leave();
-    res = locking ? LockFile(fd, off, 0, len, 0)
-     : UnlockFile(fd, off, 0, len, 0);
+    {
+	const DWORD off_hi = INT64_HIGH(off);
+	const DWORD off_lo = INT64_LOW(off);
+	const DWORD len_hi = INT64_HIGH(len);
+	const DWORD len_lo = INT64_LOW(len);
+
+	res = locking ? LockFile(fd, off_lo, off_hi, len_lo, len_hi)
+	 : UnlockFile(fd, off_lo, off_hi, len_lo, len_hi);
+    }
     sys_vm_enter();
 
     if (res) {
@@ -470,7 +493,7 @@ sys_from_file (lua_State *L)
 static int
 sys_write (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     ssize_t n = 0;  /* number of chars actually write */
     int i, nargs = lua_gettop(L);
 
@@ -478,7 +501,7 @@ sys_write (lua_State *L)
 	struct sys_buffer sb;
 	int nw;
 
-	if (!sys_buffer_read(L, i, &sb))
+	if (!sys_buffer_read_init(L, i, &sb))
 	    continue;
 	sys_vm_leave();
 #ifndef _WIN32
@@ -486,8 +509,8 @@ sys_write (lua_State *L)
 	while (nw == -1 && SYS_ERRNO == EINTR);
 #else
 	{
-	    usize_t nwr;
-	    nw = WriteFile(fd, sb.ptr.r, sb.size, &nwr, NULL) ? nwr : -1;
+	    DWORD l;
+	    nw = WriteFile(fd, sb.ptr.r, sb.size, &l, NULL) ? l : -1;
 	}
 #endif
 	sys_vm_enter();
@@ -496,7 +519,7 @@ sys_write (lua_State *L)
 	    return sys_seterror(L, 0);
 	}
 	n += nw;
-	sys_buffer_readed(&sb, nw);
+	sys_buffer_read_next(&sb, nw);
 	if ((size_t) nw < sb.size) break;
     }
     lua_pushboolean(L, (i > nargs));
@@ -511,16 +534,16 @@ sys_write (lua_State *L)
 static int
 sys_read (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     size_t n = !lua_isnumber(L, -1) ? ~((size_t) 0)
-     : (size_t) lua_tonumber(L, -1);
+     : (size_t) lua_tointeger(L, -1);
     const size_t len = n;  /* how much total to read */
     size_t rlen;  /* how much to read */
     int nr;  /* number of bytes actually read */
     struct sys_buffer sb;
     char buf[SYS_BUFSIZE];
 
-    sys_buffer_write(L, 2, &sb, buf, sizeof(buf));
+    sys_buffer_write_init(L, 2, &sb, buf, sizeof(buf));
     do {
 	rlen = (n <= sb.size) ? n : sb.size;
 	sys_vm_leave();
@@ -529,7 +552,7 @@ sys_read (lua_State *L)
 	while (nr == -1 && SYS_ERRNO == EINTR);
 #else
 	{
-	    usize_t l;
+	    DWORD l;
 	    nr = ReadFile(fd, sb.ptr.w, rlen, &l, NULL) ? l : -1;
 	}
 #endif
@@ -537,12 +560,12 @@ sys_read (lua_State *L)
 	if (nr == -1) break;
 	n -= nr;  /* still have to read `n' bytes */
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
-     && sys_buffer_written(L, &sb, buf));
+     && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
 	if (!nr || SYS_ERRNO != EAGAIN) goto err;
 	lua_pushboolean(L, 0);
     } else {
-	if (!sys_buffer_push(L, &sb, buf, nr))
+	if (!sys_buffer_write_done(L, &sb, buf, nr))
 	    lua_pushinteger(L, len - n);
     }
     return 1;
@@ -557,7 +580,7 @@ sys_read (lua_State *L)
 static int
 sys_flush (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     int res;
 
     sys_vm_leave();
@@ -582,7 +605,7 @@ sys_flush (lua_State *L)
 static int
 sys_nonblocking (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nonblocking = lua_toboolean(L, 2);
 
 #ifndef _WIN32
@@ -608,7 +631,7 @@ sys_nonblocking (lua_State *L)
 static int
 sys_tostring (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
 
     if (fd != (fd_t) -1)
 	lua_pushfstring(L, FD_TYPENAME " (%d)", (int) fd);
@@ -642,5 +665,6 @@ static luaL_reg fd_meth[] = {
     {"comm_queues",	sys_comm_queues},
     {"comm_purge",	sys_comm_purge},
     {"__gc",		sys_close},
+    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };

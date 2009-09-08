@@ -7,7 +7,7 @@ local sock = require"sys.sock"
 local TIMEOUT = 2000  -- milliseconds
 
 local sd0, sd1 = sock.handle(), sock.handle()
-assert(sd0:socket(sd1), "Create socketpair")
+assert(sd0:socket(sd1))
 
 local function ev_cb(evq, evid, fd, R, W, T, EOF)
     print(fd, R and "Read" or "", W and "Write" or "",

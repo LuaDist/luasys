@@ -46,9 +46,10 @@ struct membuf {
 #define SYSMEM_UDATA		0x010000  /* memory allocated as userdata */
 #define SYSMEM_ALLOC		0x020000  /* memory allocated */
 #define SYSMEM_MAP		0x080000  /* memory mapped */
-#define SYSMEM_BUFFLUSH		0x100000  /* auto-flush the buffer */
-#define SYSMEM_ISTREAM		0x200000  /* buffer assosiated with input streams */
-#define SYSMEM_OSTREAM		0x400000  /* buffer assosiated with output streams */
+#define SYSMEM_ISTREAM		0x100000  /* buffer assosiated with input stream */
+#define SYSMEM_OSTREAM		0x200000  /* buffer assosiated with output stream */
+#define SYSMEM_ISTREAM_BUFIO	0x400000  /* input stream can operate with buffers */
+#define SYSMEM_OSTREAM_BUFIO	0x800000  /* output stream can operate with buffers */
     unsigned int flags;
 };
 
@@ -70,10 +71,10 @@ static const char *const type_names[] = {
     "float", "double", "number", "bitstring", NULL
 };
 
-/* MemBuffer metatable reserved indexes */
+/* MemBuffer environ. table reserved indexes */
 enum {
-    SYSMEM_IDENT = 1,
-    SYSMEM_ENVIRON
+    SYSMEM_INPUT = 1,
+    SYSMEM_OUTPUT
 };
 
 
@@ -87,13 +88,12 @@ mem_tobuffer (lua_State *L, int idx)
     struct membuf *mb = lua_touserdata(L, idx);
 
     if (mb && lua_getmetatable(L, idx)) {
-	unsigned long id;
+	int is_buffer;
 
-	lua_rawgeti(L, -1, SYSMEM_IDENT);
-	id = (unsigned long) lua_tonumber(L, -1);
+	luaL_getmetatable(L, MEM_TYPENAME);
+	is_buffer = (lua_topointer(L, -1) == lua_topointer(L, -2));
 	lua_pop(L, 2);
-	if (id == (unsigned long) luaopen_sys_mem)
-	    return mb;
+	if (is_buffer) return mb;
     }
     return NULL;
 }
@@ -102,7 +102,7 @@ mem_tobuffer (lua_State *L, int idx)
  * Arguments: ..., {string | membuf_udata}
  */
 int
-sys_buffer_read (lua_State *L, int idx, struct sys_buffer *sb)
+sys_buffer_read_init (lua_State *L, int idx, struct sys_buffer *sb)
 {
     struct membuf *mb = mem_tobuffer(L, idx);
 
@@ -123,7 +123,7 @@ sys_buffer_read (lua_State *L, int idx, struct sys_buffer *sb)
 }
 
 void
-sys_buffer_readed (struct sys_buffer *sb, size_t n)
+sys_buffer_read_next (struct sys_buffer *sb, size_t n)
 {
     struct membuf *mb = sb->mb;
 
@@ -142,8 +142,8 @@ sys_buffer_readed (struct sys_buffer *sb, size_t n)
  * Arguments: ..., [membuf_udata]
  */
 void
-sys_buffer_write (lua_State *L, int idx, struct sys_buffer *sb,
-                  char *buf, size_t buflen)
+sys_buffer_write_init (lua_State *L, int idx, struct sys_buffer *sb,
+                       char *buf, size_t buflen)
 {
     struct membuf *mb = mem_tobuffer(L, idx);
 
@@ -160,15 +160,14 @@ sys_buffer_write (lua_State *L, int idx, struct sys_buffer *sb,
 }
 
 int
-sys_buffer_written (lua_State *L, struct sys_buffer *sb, char *buf)
+sys_buffer_write_next (lua_State *L, struct sys_buffer *sb,
+                       char *buf, size_t buflen)
 {
     struct membuf *mb = sb->mb;
 
     if (mb) {
-	const size_t len = mb->len;
-
-	mb->offset = len;
-	if (!membuf_addlstring(L, mb, NULL, 0))
+	if (!buflen) mb->offset = mb->len;
+	if (!membuf_addlstring(L, mb, NULL, buflen))
 	    return 0;
 	sb->ptr.w = mb->data + mb->offset;
 	sb->size = mb->len - mb->offset;
@@ -198,7 +197,8 @@ sys_buffer_written (lua_State *L, struct sys_buffer *sb, char *buf)
 }
 
 int
-sys_buffer_push (lua_State *L, struct sys_buffer *sb, char *buf, size_t tail)
+sys_buffer_write_done (lua_State *L, struct sys_buffer *sb,
+                       char *buf, size_t tail)
 {
     struct membuf *mb = sb->mb;
 
@@ -238,8 +238,6 @@ mem_new (lua_State *L)
     }
 
     luaL_getmetatable(L, MEM_TYPENAME);
-    lua_rawgeti(L, -1, SYSMEM_ENVIRON);
-    lua_setfenv(L, -3);
     lua_setmetatable(L, -2);
     return 1;
 }
@@ -329,26 +327,30 @@ static int
 mem_map (lua_State *L)
 {
     struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-    const int *fdp = checkudata(L, 2, FD_TYPENAME);
-    int fd = fdp ? *fdp : -1;  /* named or anonymous mapping */
+    const fd_t *fdp = checkudata(L, 2, FD_TYPENAME);
+    fd_t fd = fdp ? (fd_t) *fdp : (fd_t) -1;  /* named or anonymous mapping */
     const char *protstr = lua_tostring(L, 3);
-    off_t off = (off_t) lua_tonumber(L, 4);
-    size_t len = (size_t) lua_tonumber(L, 5);
+    const lua_Number offset = lua_tonumber(L, 4);
+    const int64_t off = (int64_t) offset;  /* to avoid warning */
+    size_t len = (size_t) lua_tointeger(L, 5);
     const int is_private = lua_isboolean(L, -1) && lua_toboolean(L, -1);
     int prot = 0, flags;
     void *ptr;
 
-    sys_vm_leave();
 #ifndef _WIN32
 #ifndef MAP_ANON
     int is_anon = 0;
 #endif
+
+    sys_vm_leave();
     /* length */
     if (!len) {
 	struct stat sb;
 	if (fd == -1 || fstat(fd, &sb) == -1)
 	    goto err;
-	len = sb.st_size - off;
+	sb.st_size -= off;
+	len = (sb.st_size < (off_t) ~((size_t) 0))
+	 ? (size_t) sb.st_size : ~((size_t) 0);
     }
     /* protection and flags */
     prot = PROT_READ;
@@ -377,13 +379,19 @@ mem_map (lua_State *L)
     if (ptr == MAP_FAILED) goto err;
 
 #else
+    sys_vm_leave();
     /* length */
     if (!len) {
-	if (fd == -1) goto err;
-	len = GetFileSize((HANDLE) fd, NULL);
-	if (len == INVALID_FILE_SIZE)
+	DWORD size_hi, size_lo;
+	int64_t size;
+
+	if (fd == (fd_t) -1) goto err;
+	size_lo = GetFileSize(fd, &size_hi);
+	if (size_lo == -1L && SYS_ERRNO != NO_ERROR)
 	    goto err;
-	len -= off;
+	size = INT64_MAKE(size_lo, size_hi) - off;
+	len = (size < (int64_t) ~((DWORD) 0))
+	 ? (DWORD) size : ~((DWORD) 0);
     }
     /* protection and flags */
     if (protstr && (protstr[0] == 'w' || protstr[1] == 'w')) {
@@ -399,10 +407,13 @@ mem_map (lua_State *L)
     }
     /* map file to memory */
     {
-	HANDLE hMap = CreateFileMapping((HANDLE) fd, NULL, prot, 0, len, NULL);
-	if (!hMap) goto err;
-	ptr = MapViewOfFile(hMap, flags, 0, off, len);
-	CloseHandle(hMap);
+	const DWORD off_hi = INT64_HIGH(off);
+	const DWORD off_lo = INT64_LOW(off);
+	HANDLE hmap = CreateFileMapping(fd, NULL, prot, 0, len, NULL);
+
+	if (!hmap) goto err;
+	ptr = MapViewOfFile(hmap, flags, off_hi, off_lo, len);
+	CloseHandle(hmap);
 	if (!ptr) goto err;
     }
 #endif /* !Win32 */
@@ -453,16 +464,6 @@ mem_free (lua_State *L)
 
     if (mb->data) {
 	const unsigned int mb_flags = mb->flags;
-
-	if (mb_flags & (SYSMEM_ISTREAM | SYSMEM_OSTREAM)) {
-	    lua_getfenv(L, 1);  /* input streams */
-	    lua_pushnil(L);
-	    lua_rawseti(L, -2, (int) mb);
-	    lua_rawgeti(L, -1, 0);  /* output streams */
-	    lua_pushnil(L);
-	    lua_rawseti(L, -2, (int) mb);
-	    lua_settop(L, 1);
-	}
 
 	switch (mb_flags & (SYSMEM_ALLOC | SYSMEM_MAP)) {
 	case SYSMEM_ALLOC:
@@ -649,16 +650,18 @@ mem_newindex (lua_State *L)
 }
 
 /*
- * Arguments: membuf_udata, num_bytes (number)
+ * Arguments: membuf_udata
  * Returns: string
  */
 static int
 mem_tostring (lua_State *L)
 {
     struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-    const int len = luaL_checkinteger(L, 2);
 
-    lua_pushlstring(L, mb->data, len);
+    if (mb->data)
+	lua_pushfstring(L, MEM_TYPENAME " (%p)", mb->data);
+    else
+	lua_pushliteral(L, MEM_TYPENAME " (closed)");
     return 1;
 }
 
@@ -684,52 +687,33 @@ static luaL_reg mem_meth[] = {
     {"__call",		mem_call},
     {"__index",		mem_index},
     {"__newindex",	mem_newindex},
+    {"__tostring",	mem_tostring},
     /* stream operations */
     {"write",		membuf_write},
     {"writeln",		membuf_writeln},
-    {"getstring",	membuf_getstring},
-    {"__tostring",	membuf_getstring},
+    {"tostring",	membuf_tostring},
     {"seek",		membuf_seek},
     {"output",		membuf_output},
     {"input",		membuf_input},
     {"read",		membuf_read},
     {"flush",		membuf_flush},
     {"close",		membuf_close},
+    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };
 
 static luaL_reg memlib[] = {
     {"pointer",		mem_new},
-    {"tostring",	mem_tostring},
     {NULL, NULL}
 };
 
-/*
- * Arguments: ..., mem_lib (table)
- */
-static void
-createmeta (lua_State *L)
-{
-    luaL_newmetatable(L, MEM_TYPENAME);
-
-    /* identifier */
-    lua_pushnumber(L, (unsigned long) luaopen_sys_mem);
-    lua_rawseti(L, -2, SYSMEM_IDENT);
-
-    /* environ. table: assosiated i/o streams */
-    lua_newtable(L);  /* input streams: {num(membuf_udata) => object} | {0 => out_table} */
-    lua_newtable(L);  /* output streams: {num(membuf_udata) => object} */
-    lua_rawseti(L, -2, 0);
-    lua_rawseti(L, -2, SYSMEM_ENVIRON);
-
-    luaL_register(L, NULL, mem_meth);
-}
 
 void
 luaopen_sys_mem (lua_State *L)
 {
+    luaL_newmetatable(L, MEM_TYPENAME);
+    luaL_register(L, NULL, mem_meth);
     luaL_register(L, "sys.mem", memlib);
-    createmeta(L);
     lua_pop(L, 2);
 }
 

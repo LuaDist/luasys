@@ -114,7 +114,7 @@ sys_utime (lua_State *L)
     if (lua_gettop(L) == 1)
 	bp = NULL;
     else {
-	utb.modtime = utb.actime = (time_t) lua_tonumber(L, 2);
+	utb.modtime = utb.actime = (time_t) lua_tointeger(L, 2);
 	bp = &utb;
     }
     res = !utime(filename, bp);
@@ -220,7 +220,7 @@ sys_mkdir (lua_State *L)
     const char *path = luaL_checkstring(L, 1);
 
 #ifndef _WIN32
-    mode_t perm = (mode_t) lua_tonumber(L, 2);
+    mode_t perm = (mode_t) lua_tointeger(L, 2);
 
     if (!mkdir(path, perm)) {
 #else

@@ -13,9 +13,9 @@ win32_mailslot (lua_State *L)
 {
     fd_t fd, *fdp = checkudata(L, 1, FD_TYPENAME);
     const char *pathname = luaL_checkstring(L, 2);
-    size_t max_size = (size_t) lua_tonumber(L, 3);
+    size_t max_size = (size_t) lua_tointeger(L, 3);
     const msec_t timeout = lua_isnoneornil(L, 4)
-     ? MAILSLOT_WAIT_FOREVER : (msec_t) lua_tonumber(L, 4);
+     ? MAILSLOT_WAIT_FOREVER : (msec_t) lua_tointeger(L, 4);
 
     fd = CreateMailslot(pathname, max_size, timeout, NULL);
 
@@ -34,8 +34,8 @@ win32_mailslot (lua_State *L)
 static int
 win32_mailslot_info (lua_State *L)
 {
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, FD_TYPENAME);
-    usize_t next_size, count;
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+    DWORD next_size, count;
 
     if (GetMailslotInfo(fd, NULL, &next_size, &count, NULL)) {
 	if (next_size == MAILSLOT_NO_MESSAGE)

@@ -16,7 +16,7 @@ struct message_item {
 };
 
 struct message {
-    struct sys_vmthread *src_td;  /* source */
+    struct sys_thread *src_td;  /* source */
     int size;  /* size of message in bytes */
     char items[MSG_MAXSIZE];  /* array of message items */
 };
@@ -126,13 +126,13 @@ thread_msg_send (lua_State *L)
 
     if (!vmtd) luaL_argerror(L, 1, "Thread Id. expected");
 
-    msg.src_td = sys_gettls();
+    msg.src_td = sys_get_thread();
     if (!msg.src_td) luaL_argerror(L, 0, "Threading not initialized");
 
     /* construct the message */
     thread_msg_build(L, &msg);
 
-    vmtd = ((struct sys_thread *) vmtd)->vmtd;
+    vmtd = vmtd->td.vmtd;
 
 #ifndef _WIN32
     csp = &vmtd->bufev.cs;
@@ -189,14 +189,14 @@ static int
 thread_msg_recv (lua_State *L)
 {
     struct sys_vmthread *vmtd = lua_isuserdata(L, 1)
-     ? lua_touserdata(L, 1) : sys_gettls();
+     ? lua_touserdata(L, 1) : (struct sys_vmthread *) sys_get_thread();
     const msec_t timeout = !lua_isnumber(L, -1)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, -1);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, -1);
     thread_critsect_t *csp;
 
     if (!vmtd) luaL_argerror(L, 0, "Threading not initialized");
 
-    vmtd = ((struct sys_thread *) vmtd)->vmtd;
+    vmtd = vmtd->td.vmtd;
 
 #ifndef _WIN32
     csp = &vmtd->bufev.cs;
@@ -245,12 +245,12 @@ static int
 thread_msg_count (lua_State *L)
 {
     struct sys_vmthread *vmtd = lua_isuserdata(L, 1)
-     ? lua_touserdata(L, 1) : sys_gettls();
+     ? lua_touserdata(L, 1) : (struct sys_vmthread *) sys_get_thread();
     thread_critsect_t *csp;
     int nmsg;
 
     if (!vmtd) return 0;
-    vmtd = ((struct sys_thread *) vmtd)->vmtd;
+    vmtd = vmtd->td.vmtd;
 
 #ifndef _WIN32
     csp = &vmtd->bufev.cs;

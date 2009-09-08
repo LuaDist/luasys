@@ -5,7 +5,7 @@ local sock = require"sys.sock"
 
 
 local host, port = "127.0.0.1", 8080
-local nclnt = 300
+local nclnt = 200
 
 local stdin, stdout, stderr = sys.stdin, sys.stdout, sys.stderr
 
@@ -44,8 +44,8 @@ local evq = assert(sys.event_queue())
 local addr = sock.addr_in(port, sock.inet_aton(host))
 for i = 1, nclnt do
 	local fd = sock.handle()
-	assert(fd:socket(), "Create socket")
-	assert(fd:connect(addr), "Connect")
+	assert(fd:socket())
+	assert(fd:connect(addr))
 
 	local evid = evq:add(fd, 'w', ev_cb)
 	if not evid then

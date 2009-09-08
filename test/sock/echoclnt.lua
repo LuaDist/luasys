@@ -9,9 +9,9 @@ local host, port = "127.0.0.1", 8080
 local stdin, stdout = sys.stdin, sys.stdout
 
 local fd = sock.handle()
-assert(fd:socket(), "Create socket")
+assert(fd:socket())
 
-assert(fd:connect(sock.addr_in(port, sock.inet_aton(host))), "Connect")
+assert(fd:connect(sock.addr_in(port, sock.inet_aton(host))))
 
 while true do
     local line = stdin:read()

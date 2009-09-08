@@ -1,6 +1,8 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#define _FILE_OFFSET_BITS  64
+
 #include <sys/types.h>
 #include <string.h>
 #include <stdlib.h>
@@ -65,20 +67,39 @@ extern int is_WinNT;
 #endif
 
 #define lua_boxpointer(L,u) \
-	(*(void **) (lua_newuserdata(L, sizeof(void *))) = (u))
-
+    (*(void **) (lua_newuserdata(L, sizeof(void *))) = (u))
 #define lua_unboxpointer(L,i,tname) \
-	(*(void **) (checkudata(L, i, tname)))
+    (*(void **) (checkudata(L, i, tname)))
 
+#define lua_boxinteger(L,n) \
+    (*(lua_Integer *) (lua_newuserdata(L, sizeof(lua_Integer))) = (lua_Integer) (n))
+#define lua_unboxinteger(L,i,tname) \
+    (*(lua_Integer *) (checkudata(L, i, tname)))
+
+
+/*
+ * 64-bit integers
+ */
+
+#if defined(_MSC_VER) || defined(__BORLANDC__)
+typedef __int64	int64_t;
+#endif
+
+#define INT64_MAKE(lo,hi)	(((int64_t) (hi) << 32) | (unsigned int) (lo))
+#define INT64_LOW(x)		((unsigned int) (x))
+#define INT64_HIGH(x)		((unsigned int) ((x) >> 32))
+
+
+/*
+ * File and Socket Handles
+ */
 
 #define FD_TYPENAME	"sys.handle"
 
 #ifdef _WIN32
-typedef DWORD	usize_t;
 typedef HANDLE	fd_t;
 typedef SOCKET	sd_t;
 #else
-typedef size_t	usize_t;
 typedef int	fd_t;
 typedef int	sd_t;
 #endif
@@ -88,6 +109,7 @@ typedef int	sd_t;
  * Buffer Management
  */
 
+#define SYS_BUFIO_META	"bufio__"  /* key to indicate buffer i/o */
 #define SYS_BUFSIZE	4096
 
 struct membuf;
@@ -101,19 +123,22 @@ struct sys_buffer {
     struct membuf *mb;
 };
 
-int sys_buffer_read (lua_State *L, int idx, struct sys_buffer *sb);
-void sys_buffer_readed (struct sys_buffer *sb, size_t n);
+int sys_buffer_read_init (lua_State *L, int idx, struct sys_buffer *sb);
+void sys_buffer_read_next (struct sys_buffer *sb, size_t n);
 
-void sys_buffer_write (lua_State *L, int idx, struct sys_buffer *sb,
-                       char *buf, size_t buflen);
-int sys_buffer_written (lua_State *L, struct sys_buffer *sb, char *buf);
-int sys_buffer_push (lua_State *L, struct sys_buffer *sb,
-                     char *buf, size_t tail);
+void sys_buffer_write_init (lua_State *L, int idx, struct sys_buffer *sb,
+                            char *buf, size_t buflen);
+int sys_buffer_write_next (lua_State *L, struct sys_buffer *sb,
+                           char *buf, size_t buflen);
+int sys_buffer_write_done (lua_State *L, struct sys_buffer *sb,
+                           char *buf, size_t tail);
 
 
 /*
  * Error Reporting
  */
+
+#define SYS_ERROR_MESSAGE	"errorMessage"
 
 int sys_seterror (lua_State *L, int err);
 
@@ -122,19 +147,22 @@ int sys_seterror (lua_State *L, int err);
  * Threading
  */
 
-struct sys_vmthread;
+struct sys_thread;
 
-struct sys_vmthread *sys_get_vmthread (void);
-void sys_set_vmthread (struct sys_vmthread *vmtd);
+void sys_set_thread (struct sys_thread *td);
+struct sys_thread *sys_get_thread (void);
 
-void sys_vm2_enter (struct sys_vmthread *vmtd);
-void sys_vm2_leave (struct sys_vmthread *vmtd);
+struct sys_thread *sys_get_vmthread (struct sys_thread *);
+struct lua_State *sys_lua_tothread (struct sys_thread *);
+
+void sys_vm2_enter (struct sys_thread *td);
+void sys_vm2_leave (struct sys_thread *td);
 
 void sys_vm_enter (void);
 void sys_vm_leave (void);
 
-lua_State *sys_newthread (lua_State *L, struct sys_vmthread *vmtd);
-void sys_delthread (lua_State *L);
+struct sys_thread *sys_new_thread (struct sys_thread *td);
+struct sys_thread *sys_del_thread (struct sys_thread *td);
 
 
 /*
@@ -145,7 +173,7 @@ void sys_delthread (lua_State *L);
 
 typedef void *		sys_trigger_t;
 
-typedef sys_trigger_t *(*sys_get_trigger_t) (lua_State *L, struct sys_vmthread **vmtdp);
+typedef sys_trigger_t *(*sys_get_trigger_t) (lua_State *L, struct sys_thread **tdp);
 
 enum {
     SYS_EVREAD	= 1,

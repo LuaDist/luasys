@@ -69,7 +69,7 @@ date_getfield (lua_State *L, const char *key, int value)
 static int
 sys_date (lua_State *L)
 {
-    time_t t = lua_isnumber(L, 2) ? (time_t) lua_tonumber(L, 2)
+    time_t t = lua_isnumber(L, 2) ? (time_t) lua_tointeger(L, 2)
      : time(NULL);  /* current time */
     const int is_UTC = lua_isboolean(L, -1) && lua_toboolean(L, -1);
     const struct tm *tsp;
@@ -139,8 +139,8 @@ sys_time (lua_State *L)
 static int
 sys_difftime (lua_State *L)
 {
-    lua_pushnumber(L, difftime((time_t) lua_tonumber(L, 1),
-     (time_t) lua_tonumber(L, 2)));
+    lua_pushnumber(L, difftime((time_t) lua_tointeger(L, 1),
+     (time_t) lua_tointeger(L, 2)));
     return 1;
 }
 

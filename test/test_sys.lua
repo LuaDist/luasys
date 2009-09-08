@@ -80,8 +80,8 @@ print"-- Signal: wait SIGINT"
 do
     local function on_signal(evq, evid, _, _, _, timeout)
 	if timeout then
-	    assert(evq:timeout(evid), "Clear timer")
-	    assert(evq:ignore_signal("INT", false), "Enable signal")
+	    assert(evq:timeout(evid))
+	    assert(evq:ignore_signal("INT", false))
 	    print"SIGINT enabled. Please, press Ctrl-C..."
 	else
 	    print"Thanks!"
@@ -91,7 +91,7 @@ do
     local evq = assert(sys.event_queue())
 
     assert(evq:add_signal("INT", on_signal, 3000, true))
-    assert(evq:ignore_signal("INT", true), "Disable signal")
+    assert(evq:ignore_signal("INT", true))
 
     evq:loop(10000)
     print"OK"

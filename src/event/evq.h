@@ -4,18 +4,16 @@
 struct event;
 struct event_queue;
 
-#define HAVE_EPOLL
-
 #if defined(_WIN32)
 #include "win32.h"
-#elif defined(HAVE_KQUEUE)
-#include "kqueue.h"
-#elif defined(HAVE_EPOLL)
-#include "epoll.h"
-#elif defined(HAVE_POLL)
-#include "poll.h"
-#else
+#elif defined(USE_SELECT)
 #include "select.h"
+#elif defined(USE_POLL)
+#include "poll.h"
+#elif defined(USE_KQUEUE)
+#include "kqueue.h"
+#else
+#include "epoll.h"
 #endif
 
 #include "timeout.h"
@@ -84,7 +82,7 @@ struct event_queue {
 #define EVQ_INTR	0x02  /* evq interrupted */
     unsigned int flags;
 
-    struct sys_vmthread *vmtd;  /* for inter-vm events (eg. threads i/o) */
+    struct sys_thread *vmtd;  /* for inter-vm events (eg. threads i/o) */
     struct event * volatile triggers;  /* ready triggers */
 
     EVQ_EXTRA

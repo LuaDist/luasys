@@ -4,11 +4,9 @@
 
 #ifdef _WIN32
 
-#include <mswsock.h>	/* TransmitFile */
+#include <ws2tcpip.h>	/* Multicast */
 
 #define IS_OVERLAPPED	(is_WinNT ? WSA_FLAG_OVERLAPPED : 0)
-
-#define INET_ATON
 
 #define SHUT_WR		SD_SEND
 
@@ -31,11 +29,10 @@ typedef int		socklen_t;
 #include <netinet/tcp.h>	/* TCP_NODELAY */
 #include <netdb.h>
 
-extern int h_errno;
 #define SOCK_ERRNO	h_errno
 
-#ifdef __linux
-#include <sys/sendfile.h>	/* sendfile */
+#if defined(__linux__)
+#include <sys/sendfile.h>
 #else
 #include <sys/uio.h>		/* sendfile */
 #endif
@@ -100,7 +97,7 @@ sock_seterror (lua_State *L)
     lua_pushnil(L);
     sock_strerror(L);
     lua_pushvalue(L, -1);
-    lua_setglobal(L, "errorMessage");
+    lua_setglobal(L, SYS_ERROR_MESSAGE);
     return 2;
 }
 
@@ -111,7 +108,7 @@ sock_seterror (lua_State *L)
 static int
 sock_new (lua_State *L)
 {
-    lua_boxpointer(L, (void *) -1);
+    lua_boxinteger(L, -1);
     luaL_getmetatable(L, SD_TYPENAME);
     lua_setmetatable(L, -2);
     return 1;
@@ -234,7 +231,7 @@ sock_close (lua_State *L)
 static int
 sock_shutdown (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
 
     /* SHUT_RD (SD_RECEIVE) has different behavior in unix and win32 */
     if (!shutdown(sd, SHUT_WR)) {
@@ -251,7 +248,7 @@ sock_shutdown (lua_State *L)
 static int
 sock_nonblocking (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     unsigned long opt = lua_toboolean(L, 2);
 
     lua_settop(L, 1);
@@ -272,19 +269,23 @@ sock_sockopt (lua_State *L)
 	SO_SNDBUF, SO_RCVBUF, SO_SNDLOWAT, SO_RCVLOWAT,
 	SO_BROADCAST, SO_KEEPALIVE, SO_OOBINLINE, SO_LINGER,
 #define OPTNAMES_TCP	12
-	TCP_NODELAY
+	TCP_NODELAY,
+#define OPTNAMES_IP	13
+	IP_MULTICAST_TTL, IP_MULTICAST_IF, IP_MULTICAST_LOOP
     };
     static const char *const opt_names[] = {
 	"reuseaddr", "type", "error", "dontroute",
 	"sndbuf", "rcvbuf", "sndlowat", "rcvlowat",
 	"broadcast", "keepalive", "oobinline", "linger",
-	"tcp_nodelay", NULL
+	"tcp_nodelay",
+	"multicast_ttl", "multicast_if", "multicast_loop", NULL
     };
 #undef OPT_START
 #define OPT_START	2
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     const int optname = luaL_checkoption(L, OPT_START, NULL, opt_names);
-    const int level = (optname < OPTNAMES_TCP) ? SOL_SOCKET : IPPROTO_TCP;
+    const int level = (optname < OPTNAMES_TCP) ? SOL_SOCKET
+     : (optname < OPTNAMES_IP ? IPPROTO_TCP : IPPROTO_IP);
     const int optflag = opt_flags[optname];
     int optval[4];
     socklen_t optlen = sizeof(int);
@@ -312,13 +313,42 @@ sock_sockopt (lua_State *L)
 }
 
 /*
+ * Arguments: sd_udata, in_addr_udata (multiaddr),
+ *	[in_addr_udata (interface), add/drop (boolean)]
+ * Returns: [sd_udata]
+ */
+static int
+sock_membership (lua_State *L)
+{
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
+    const struct in_addr *multiaddrp = lua_touserdata(L, 2);
+    const struct in_addr *interfacep = lua_touserdata(L, 3);
+    const int optflag = !lua_isboolean(L, -1) || lua_toboolean(L, -1)
+     ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
+    struct ip_mreq ipmr;
+
+    if (!multiaddrp) luaL_typerror(L, 2, "socket address");
+
+    ipmr.imr_multiaddr.s_addr = multiaddrp->s_addr;
+    ipmr.imr_interface.s_addr = interfacep
+     ? interfacep->s_addr : htonl(INADDR_ANY);
+
+    if (!setsockopt(sd, IPPROTO_IP, optflag,
+     (char *) &ipmr, sizeof(struct ip_mreq))) {
+	lua_settop(L, 1);
+	return 1;
+    }
+    return sys_seterror(L, 0);
+}
+
+/*
  * Arguments: sd_udata, sock_addr_udata
  * Returns: [sd_udata]
  */
 static int
 sock_bind (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     struct sock_addr *sap = lua_touserdata(L, 2);
 
     if (!sap) luaL_typerror(L, 2, "socket address");
@@ -337,7 +367,7 @@ sock_bind (lua_State *L)
 static int
 sock_listen (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     const int backlog = luaL_optinteger(L, 2, SOMAXCONN);
 
     if (!listen(sd, backlog)) {
@@ -348,14 +378,15 @@ sock_listen (lua_State *L)
 }
 
 /*
- * Arguments: sd_udata, [sock_addr_udata]
+ * Arguments: sd_udata, new_sd_udata, [sock_addr_udata]
  * Returns: [new_sd_udata | false (EAGAIN)]
  */
 static int
 sock_accept (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
-    struct sock_addr *from = lua_touserdata(L, 2);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
+    sd_t *sdp = checkudata(L, 2, SD_TYPENAME);
+    struct sock_addr *from = lua_touserdata(L, 3);
     struct sockaddr *sap = NULL;
     socklen_t *lenp = NULL;
 
@@ -369,14 +400,13 @@ sock_accept (lua_State *L)
 #else
     sd = accept(sd, sap, lenp);
 #endif
-    if (sd == (sd_t) -1 && SOCK_ERRNO == EAGAIN) {
-	lua_pushboolean(L, 0);
+    if (sd != (sd_t) -1) {
+	*sdp = sd;
+	lua_settop(L, 2);
 	return 1;
     }
-    if (sd != (sd_t) -1) {
-	lua_boxpointer(L, (void *) sd);
-	luaL_getmetatable(L, SD_TYPENAME);
-	lua_setmetatable(L, -2);
+    else if (SOCK_ERRNO == EAGAIN) {
+	lua_pushboolean(L, 0);
 	return 1;
     }
     return sock_seterror(L);
@@ -389,7 +419,7 @@ sock_accept (lua_State *L)
 static int
 sock_connect (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     struct sock_addr *sap = lua_touserdata(L, 2);
     int res;
 
@@ -415,7 +445,7 @@ sock_connect (lua_State *L)
 static int
 sock_getpeername (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     struct sock_addr *sap = lua_touserdata(L, 2);
 
     if (!sap) sap = lua_newuserdata(L, sizeof(struct sock_addr));
@@ -440,13 +470,13 @@ sock_send (lua_State *L)
     static const char *const o_names[] = {
 	"oob", "dontroute", NULL
     };
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     const struct sock_addr *to = lua_touserdata(L, 3);
     struct sys_buffer sb;
     int nw;  /* number of chars actually send */
     unsigned int i, flags = 0;
 
-    if (!sys_buffer_read(L, 2, &sb))
+    if (!sys_buffer_read_init(L, 2, &sb))
 	luaL_argerror(L, 2, "buffer expected");
     for (i = lua_gettop(L); i > 3; --i) {
 	flags |= o_flags[luaL_checkoption(L, i, NULL, o_names)];
@@ -461,7 +491,7 @@ sock_send (lua_State *L)
 	    return sock_seterror(L);
 	nw = 0;
     } else {
-	sys_buffer_readed(&sb, nw);
+	sys_buffer_read_next(&sb, nw);
     }
     lua_pushboolean(L, ((size_t) nw == sb.size));
     lua_pushinteger(L, nw);
@@ -489,21 +519,21 @@ sock_recv (lua_State *L)
 #endif
 	NULL
     };
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     struct sock_addr *from = lua_touserdata(L, 3);
     struct sockaddr *sap = NULL;
     socklen_t *lenp = NULL;
     unsigned int i, flags = 0;
 
     size_t n = !lua_isnumber(L, 2) ? ~((size_t) 0)
-     : (size_t) lua_tonumber(L, 2);
+     : (size_t) lua_tointeger(L, 2);
     const size_t len = n;  /* how much total to read */
     size_t rlen;  /* how much to read */
     int nr;  /* number of bytes actually read */
     struct sys_buffer sb;
     char buf[SYS_BUFSIZE];
 
-    sys_buffer_write(L, 2, &sb, buf, sizeof(buf));
+    sys_buffer_write_init(L, 2, &sb, buf, sizeof(buf));
 
     for (i = lua_gettop(L); i > 3; --i) {
 	flags |= o_flags[luaL_checkoption(L, i, NULL, o_names)];
@@ -525,12 +555,12 @@ sock_recv (lua_State *L)
 	if (nr == -1) break;
 	n -= nr;  /* still have to read `n' bytes */
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
-     && sys_buffer_written(L, &sb, buf));
+     && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
 	if (!nr || SOCK_ERRNO != EAGAIN) goto err;
 	lua_pushboolean(L, 0);
     } else {
-	if (!sys_buffer_push(L, &sb, buf, nr))
+	if (!sys_buffer_write_done(L, &sb, buf, nr))
 	    lua_pushinteger(L, len - n);
     }
     return 1;
@@ -541,29 +571,44 @@ sock_recv (lua_State *L)
 
 #ifdef _WIN32
 
-static BOOL
-TransmitMapFile (SOCKET sd, HANDLE fd, DWORD n)
+#define SYS_GRAN_MASK	(64 * 1024 - 1)
+
+static DWORD
+TransmitFileMap (SOCKET sd, HANDLE fd, DWORD n)
 {
-    HANDLE hMap = CreateFileMapping(fd, NULL, PAGE_READONLY, 0, 0, NULL);
-    BOOL res = FALSE;
+    HANDLE hmap = CreateFileMapping(fd, NULL, PAGE_READONLY, 0, 0, NULL);
+    DWORD res = 0;
 
-    if (hMap) {
-	DWORD offset = SetFilePointer(fd, 0, NULL, FILE_CURRENT);
-	DWORD size = SetFilePointer(fd, 0, NULL, FILE_END) - offset;
-	void *base;
+    if (hmap) {
+	DWORD size_hi, size_lo;
+	char *base = NULL;
 
-	if (n <= 0 || n > size) n = size;
-	base = MapViewOfFile(hMap, FILE_MAP_READ, 0, offset, n);
-	CloseHandle(hMap);
+	size_lo = GetFileSize(fd, &size_hi);
+	if (size_lo != -1L || SYS_ERRNO == NO_ERROR) {
+	    LONG off_hi = 0, off_lo;
+	    int64_t size;
+	    DWORD len;
+
+	    off_lo = SetFilePointer(fd, 0, &off_hi, SEEK_CUR);
+	    size = INT64_MAKE(size_lo, size_hi) - INT64_MAKE(off_lo, off_hi);
+	    len = (size < (int64_t) ~((DWORD) 0))
+	     ? (DWORD) size : ~((DWORD) 0);
+
+	    if (n <= 0 || n > len) n = len;
+	    size_lo = (off_lo & SYS_GRAN_MASK);
+	    base = MapViewOfFile(hmap, FILE_MAP_READ,
+	     off_hi, (off_lo & ~SYS_GRAN_MASK), 0);
+	}
+	CloseHandle(hmap);
+
 	if (base) {
-	    WSABUF buf = {n, base};
-	    if (!WSASend(sd, &buf, 1, &size, 0, NULL, NULL)) {
-		offset += size;
-		res = TRUE;
+	    WSABUF buf = {n, base + size_lo};
+
+	    if (!WSASend(sd, &buf, 1, &res, 0, NULL, NULL)) {
+		SetFilePointer(fd, res, NULL, SEEK_CUR);
 	    }
 	    UnmapViewOfFile(base);
 	}
-	SetFilePointer(fd, offset, NULL, FILE_BEGIN);
     }
     return res;
 }
@@ -573,45 +618,52 @@ TransmitMapFile (SOCKET sd, HANDLE fd, DWORD n)
 
 /*
  * Arguments: sd_udata, fd_udata, [count (number)]
- * Returns: [sd_udata | false (EAGAIN)]
+ * Returns: [count (number) | false (EAGAIN)]
  */
 static int
 sock_sendfile (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
-    fd_t fd = (fd_t) lua_unboxpointer(L, 2, FD_TYPENAME);
-    off_t n = (off_t) lua_tonumber(L, 3);
-    int res;
-
-#ifndef _WIN32
-    off_t offset = lseek(fd, 0, SEEK_CUR);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 2, FD_TYPENAME);
+    size_t n = (size_t) lua_tointeger(L, 3);
+    ssize_t res;
 
     sys_vm_leave();
-#ifdef __linux
-    do res = sendfile(sd, fd, &offset, n ? (size_t) n : ~((size_t) 0));
+#ifndef _WIN32
+#if defined(__linux__)
+    do res = sendfile(sd, fd, NULL, n ? n : ~((size_t) 0));
     while (res == -1 && SOCK_ERRNO == EINTR);
 #else
-    do res = sendfile(fd, sd, offset, n, NULL, &n, 0);
-    while (res == -1 && SOCK_ERRNO == EINTR);
-    offset += n;
+    {
+	off_t nw, off = lseek(fd, 0, SEEK_CUR);
+
+#if defined(__APPLE__) && defined(__MACH__)
+	nw = n;
+	do res = sendfile(fd, sd, off, &nw, NULL, 0);
+#else
+	do res = sendfile(fd, sd, off, n, NULL, &nw, 0);
+#endif
+	while (res == -1 && SOCK_ERRNO == EINTR);
+	if (res != -1) {
+	    res = (size_t) nw;
+	    lseek(fd, nw, SEEK_CUR);
+	}
+    }
 #endif
     sys_vm_enter();
 
     if (res != -1 || SOCK_ERRNO == EAGAIN) {
-	if (res != -1) {
+	if (res == -1) {
 	    lua_pushboolean(L, 0);
 	    return 1;
 	}
-	lseek(fd, offset, SEEK_SET);
 #else
-    sys_vm_leave();
-    res = is_WinNT ? TransmitFile(sd, fd, n, 0, NULL, NULL, 0)
-     : TransmitMapFile(sd, fd, n);
+    res = TransmitFileMap(sd, fd, n);
     sys_vm_enter();
 
-    if (res) {
+    if (res != 0L) {
 #endif
-	lua_settop(L, 1);
+	lua_pushinteger(L, res);
 	return 1;
     }
     return sys_seterror(L, 0);
@@ -624,7 +676,7 @@ sock_sendfile (lua_State *L)
 static int
 sock_write (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     ssize_t n = 0;  /* number of chars actually write */
     int i, nargs = lua_gettop(L);
 
@@ -632,7 +684,7 @@ sock_write (lua_State *L)
 	struct sys_buffer sb;
 	int nw;
 
-	if (!sys_buffer_read(L, i, &sb))
+	if (!sys_buffer_read_init(L, i, &sb))
 	    continue;
 	sys_vm_leave();
 #ifndef _WIN32
@@ -641,7 +693,7 @@ sock_write (lua_State *L)
 #else
 	{
 	    WSABUF buf = {sb.size, sb.ptr.w};
-	    usize_t l;
+	    DWORD l;
 	    nw = !WSASend(sd, &buf, 1, &l, 0, NULL, NULL) ? l : -1;
 	}
 #endif
@@ -655,7 +707,7 @@ sock_write (lua_State *L)
 #endif
 	}
 	n += nw;
-	sys_buffer_readed(&sb, nw);
+	sys_buffer_read_next(&sb, nw);
 	if ((size_t) nw < sb.size) break;
     }
     lua_pushboolean(L, (i > nargs));
@@ -670,16 +722,16 @@ sock_write (lua_State *L)
 static int
 sock_read (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     size_t n = !lua_isnumber(L, -1) ? ~((size_t) 0)
-     : (size_t) lua_tonumber(L, -1);
+     : (size_t) lua_tointeger(L, -1);
     const size_t len = n;  /* how much total to read */
     size_t rlen;  /* how much to read */
     int nr;  /* number of bytes actually read */
     struct sys_buffer sb;
     char buf[SYS_BUFSIZE];
 
-    sys_buffer_write(L, 2, &sb, buf, sizeof(buf));
+    sys_buffer_write_init(L, 2, &sb, buf, sizeof(buf));
     do {
 	rlen = (n <= sb.size) ? n : sb.size;
 	sys_vm_leave();
@@ -689,7 +741,7 @@ sock_read (lua_State *L)
 #else
 	{
 	    WSABUF buf = {rlen, sb.ptr.w};
-	    usize_t l, flags = 0;
+	    DWORD l, flags = 0;
 	    nr = !WSARecv(sd, &buf, 1, &l, &flags, NULL, NULL) ? l : -1;
 	}
 #endif
@@ -697,12 +749,12 @@ sock_read (lua_State *L)
 	if (nr == -1) break;
 	n -= nr;  /* still have to read `n' bytes */
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
-     && sys_buffer_written(L, &sb, buf));
+     && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
 	if (!nr || SOCK_ERRNO != EAGAIN) goto err;
 	lua_pushboolean(L, 0);
     } else {
-	if (!sys_buffer_push(L, &sb, buf, nr))
+	if (!sys_buffer_write_done(L, &sb, buf, nr))
 	    lua_pushinteger(L, len - n);
     }
     return 1;
@@ -721,7 +773,7 @@ sock_read (lua_State *L)
 static int
 sock_tostring (lua_State *L)
 {
-    sd_t sd = (sd_t) lua_unboxpointer(L, 1, SD_TYPENAME);
+    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
 
     if (sd != (sd_t) -1)
 	lua_pushfstring(L, SD_TYPENAME " (%d)", (int) sd);
@@ -769,7 +821,6 @@ sock_addr_in (lua_State *L)
     };
 }
 
-
 #ifndef _WIN32
 
 /*
@@ -807,7 +858,20 @@ sock_addr_un (lua_State *L)
 #endif
 
 
-#ifdef INET_ATON
+/*
+ * Arguments: host (string)
+ * Returns: number
+ */
+static int
+sock_inet_addr (lua_State *L)
+{
+    const char *host = luaL_checkstring(L, 1);
+
+    lua_pushnumber(L, inet_addr(host));
+    return 1;
+}
+
+#ifdef _WIN32
 
 #define atod(cp, num)							\
     while (isdigit(*(cp)))						\
@@ -820,15 +884,15 @@ inet_aton (const char *cp, struct in_addr *inp)
     int n = 0;
 
     atod(cp, n);
-    if (n > 255 || !*cp++) return 0;
+    if (n > 255 || *cp++ != '.') return 0;
     addr = n;
     n = 0;
     atod(cp, n);
-    if (n > 255 || !*cp++) return 0;
+    if (n > 255 || *cp++ != '.') return 0;
     addr = (addr << 8) | n;
     n = 0;
     atod(cp, n);
-    if (n > 255 || !*cp++) return 0;
+    if (n > 255 || *cp++ != '.') return 0;
     addr = (addr << 8) | n;
     n = 0;
     atod(cp, n);
@@ -840,7 +904,7 @@ inet_aton (const char *cp, struct in_addr *inp)
 #endif
 
 /*
- * Arguments: host (string)
+ * Arguments: host (string: address, "*", "any", "loopback", "broadcast")
  * Returns: in_addr_udata
  */
 static int
@@ -848,7 +912,22 @@ sock_inet_aton (lua_State *L)
 {
     const char *host = luaL_checkstring(L, 1);
     struct in_addr *inp = lua_newuserdata(L, sizeof(struct in_addr));
-    return inet_aton(host, inp) ? 1 : 0;
+
+    switch (*host) {
+    case 'a':  /* any */
+    case '*':
+	inp->s_addr = htonl(INADDR_ANY);
+	break;
+    case 'l':  /* loopback */
+	inp->s_addr = htonl(INADDR_LOOPBACK);
+	break;
+    case 'b':  /* broadcast */
+	inp->s_addr = htonl(INADDR_BROADCAST);
+	break;
+    default:
+	if (!inet_aton(host, inp)) return 0;
+    }
+    return 1;
 }
 
 /*
@@ -913,6 +992,7 @@ static luaL_reg sd_meth[] = {
     {"shutdown",	sock_shutdown},
     {"nonblocking",	sock_nonblocking},
     {"sockopt",		sock_sockopt},
+    {"membership",	sock_membership},
     {"bind",		sock_bind},
     {"listen",		sock_listen},
     {"accept",		sock_accept},
@@ -925,6 +1005,7 @@ static luaL_reg sd_meth[] = {
     {"read",		sock_read},
     {"__tostring",	sock_tostring},
     {"__gc",		sock_close},
+    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };
 
@@ -934,6 +1015,7 @@ static luaL_reg socklib[] = {
 #ifndef _WIN32
     {"addr_un",		sock_addr_un},
 #endif
+    {"inet_addr",	sock_inet_addr},
     {"inet_aton",	sock_inet_aton},
     {"inet_ntoa",	sock_inet_ntoa},
     {"gethostbyname",	sock_gethostbyname},

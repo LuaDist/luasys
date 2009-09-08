@@ -16,7 +16,7 @@ sys_event_queue (lua_State *L)
 {
     struct event_queue *evq = lua_newuserdata(L, sizeof(struct event_queue));
     memset(evq, 0, sizeof(struct event_queue));
-    evq->vmtd = sys_get_vmthread();
+    evq->vmtd = sys_get_vmthread(sys_get_thread());
 
     if (!evq_init(evq)) {
 	luaL_getmetatable(L, EVQ_TYPENAME);
@@ -151,7 +151,7 @@ levq_add (lua_State *L)
      ? lua_tointeger(L, 3) : 0;
     const char *evstr = signo ? NULL : lua_tostring(L, 3);
     const msec_t timeout = lua_isnoneornil(L, 5)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 5);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, 5);
     const unsigned int ev_flags = (lua_toboolean(L, 6) ? EVENT_ONESHOT : 0)
      | lua_tointeger(L, 7);
     sys_get_trigger_t get_trigger = ev_flags
@@ -176,7 +176,7 @@ levq_add (lua_State *L)
 
     if (ev_flags & EVENT_TIMER) {
 	if (ev_flags & EVENT_OBJECT) {
-	    struct sys_vmthread *vmtd;
+	    struct sys_thread *vmtd;
 	    struct event **ev_head;
 
 	    lua_pushvalue(L, 2);
@@ -391,7 +391,7 @@ levq_del (lua_State *L)
 	    if (ev->flags & EVENT_OBJECT) {
 		struct event_queue *evq = event_get_evq(ev);
 		sys_get_trigger_t get_trigger;
-		struct sys_vmthread *vmtd;
+		struct sys_thread *vmtd;
 		struct event **ev_head;
 
 		lua_pushlightuserdata(L, (void *) ev_id);
@@ -531,7 +531,7 @@ levq_timeout (lua_State *L)
 {
     int ev_id = lua_tointeger(L, 2);
     msec_t timeout = lua_isnoneornil(L, 3)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 3);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, 3);
     struct event *ev;
 
     lua_getfenv(L, 1);
@@ -569,7 +569,7 @@ levq_loop (lua_State *L)
 {
     struct event_queue *evq = checkudata(L, 1, EVQ_TYPENAME);
     msec_t timeout = lua_isnoneornil(L, 2)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 2);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, 2);
     struct event *ev;
 
 #undef ARG_LAST
@@ -682,7 +682,7 @@ levq_stop (lua_State *L)
 int
 sys_trigger_notify (sys_trigger_t *trigger, int flags)
 {
-    struct sys_vmthread *vmtd = sys_get_vmthread();
+    struct sys_thread *vmtd = sys_get_vmthread(sys_get_thread());
     struct event *ev = (struct event *) *trigger;
     struct event_queue *evq = event_get_evq(ev);
     struct event *ev_ready;

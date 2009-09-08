@@ -49,7 +49,9 @@ sys_log (lua_State *L)
 	lua_setmetatable(L, -2);
 	return 1;
     }
+#ifdef _WIN32
     return sys_seterror(L, 0);
+#endif
 }
 
 /*
@@ -106,15 +108,12 @@ log_report (lua_State *L)
 
 #ifndef _WIN32
     syslog(logp->type, "%s", msg);
-    {
 #else
-    if (ReportEvent(logp->h, (short) logp->type,
-     0, 0, NULL, 1, 0, &msg, NULL)) {
+    ReportEvent(logp->h, (short) logp->type,
+     0, 0, NULL, 1, 0, &msg, NULL);
 #endif
-	lua_settop(L, 1);
-	return 1;
-    }
-    return sys_seterror(L, 0);
+    lua_settop(L, 1);
+    return 1;
 }
 
 

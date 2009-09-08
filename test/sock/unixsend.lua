@@ -7,8 +7,9 @@ local sock = require"sys.sock"
 local file = "/tmp/test_sock_lua"
 
 local fd = sock.handle()
-assert(fd:socket("dgram", "unix"), "Create socket")
-local addr = assert(sock.addr_un(file), "Create address")
+assert(fd:socket("dgram", "unix"))
 
-assert(fd:connect(addr), "Connect")
+local addr = assert(sock.addr_un(file))
+assert(fd:connect(addr))
+
 fd:send(sys.stdin:read(13))

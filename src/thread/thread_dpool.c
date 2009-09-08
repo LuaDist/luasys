@@ -60,7 +60,7 @@ dpool_done (lua_State *L)
 static int
 dpool_put (lua_State *L)
 {
-    struct sys_thread *td = sys_gettls();
+    struct sys_thread *td = sys_get_thread();
     struct data_pool *dp = checkudata(L, 1, DPOOL_TYPENAME);
     int nput = lua_gettop(L) - 1;
 
@@ -123,7 +123,7 @@ dpool_get (lua_State *L)
 {
     struct data_pool *dp = checkudata(L, 1, DPOOL_TYPENAME);
     const msec_t timeout = lua_isnoneornil(L, 2)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 2);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, 2);
     int nput;
 
     lua_settop(L, 1);
@@ -200,7 +200,7 @@ dpool_wait (lua_State *L)
 {
     struct data_pool *dp = checkudata(L, 1, DPOOL_TYPENAME);
     const msec_t timeout = lua_isnoneornil(L, 2)
-     ? TIMEOUT_INFINITE : (msec_t) lua_tonumber(L, 2);
+     ? TIMEOUT_INFINITE : (msec_t) lua_tointeger(L, 2);
     int res;
 
     res = thread_event_wait(&dp->tev, timeout);
@@ -284,11 +284,11 @@ dpool_tostring (lua_State *L)
  * Arguments: ..., dpool_udata
  */
 static sys_trigger_t *
-dpool_get_trigger (lua_State *L, struct sys_vmthread **vmtdp)
+dpool_get_trigger (lua_State *L, struct sys_thread **tdp)
 {
     struct data_pool *dp = checkudata(L, -1, DPOOL_TYPENAME);
 
-    *vmtdp = NULL;
+    *tdp = NULL;
     return &dp->trigger;
 }
 

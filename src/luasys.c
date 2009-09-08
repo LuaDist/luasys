@@ -73,7 +73,7 @@ sys_seterror (lua_State *L, int err)
     lua_pushnil(L);
     sys_strerror(L);
     lua_pushvalue(L, -1);
-    lua_setglobal(L, "errorMessage");
+    lua_setglobal(L, SYS_ERROR_MESSAGE);
     return 2;
 }
 
@@ -161,6 +161,20 @@ sys_toint (lua_State *L)
     return 1;
 }
 
+/*
+ * Arguments: error_handler (function), function, any ...
+ * Returns: status (boolean), any ...
+ */
+static int
+sys_xpcall (lua_State *L)
+{
+    const int status = lua_pcall(L, lua_gettop(L) - 2, LUA_MULTRET, 1);
+
+    lua_pushboolean(L, !status);
+    lua_insert(L, 2);
+    return lua_gettop(L) - 1;
+}
+
 
 #ifndef _WIN32
 #include "sys_unix.c"
@@ -183,6 +197,7 @@ static luaL_reg syslib[] = {
     {"nprocs",		sys_nprocs},
     {"limit_nfiles",	sys_limit_nfiles},
     {"toint",		sys_toint},
+    {"xpcall",		sys_xpcall},
     {"stat",		sys_stat},
     {"utime",		sys_utime},
     {"remove",		sys_remove},
@@ -246,7 +261,7 @@ createmeta (lua_State *L)
 	    const fd_t fd = std_fd[i];
 #endif
 	    lua_pushstring(L, std[i]);
-	    lua_boxpointer(L, (void *) fd);
+	    lua_boxinteger(L, fd);
 	    lua_pushvalue(L, -3);  /* metatable */
 	    lua_pushboolean(L, 1);
 	    lua_rawseti(L, -2, (int) fd);  /* don't close std. handles */

@@ -13,12 +13,14 @@
 static int
 sys_random (lua_State *L)
 {
-    void *p = lua_newuserdata(L, sizeof(void *));
 #ifndef _WIN32
     fd_t fd = open("/dev/urandom", O_RDONLY, 0);
+
     if (fd != (fd_t) -1) {
-	*((int *) p) = fd;
+	lua_boxinteger(L, fd);
 #else
+    HCRYPTPROV *p = lua_newuserdata(L, sizeof(void *));
+
     if (CryptAcquireContext(p, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
 #endif
 	luaL_getmetatable(L, RAND_TYPENAME);
@@ -35,10 +37,12 @@ static int
 rand_close (lua_State *L)
 {
 #ifndef _WIN32
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, RAND_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, RAND_TYPENAME);
+
     close(fd);
 #else
     HCRYPTPROV prov = (HCRYPTPROV) lua_unboxpointer(L, 1, RAND_TYPENAME);
+
     CryptReleaseContext(prov, 0);
 #endif
     return 0;
@@ -51,9 +55,9 @@ rand_close (lua_State *L)
 static int
 rand_next (lua_State *L)
 {
-    unsigned long num, ub = (unsigned long) lua_tonumber(L, 2);
+    unsigned long num, ub = (unsigned long) lua_tointeger(L, 2);
 #ifndef _WIN32
-    fd_t fd = (fd_t) lua_unboxpointer(L, 1, RAND_TYPENAME);
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, RAND_TYPENAME);
     int nr;
 
     do nr = read(fd, (char *) &num, sizeof(num));

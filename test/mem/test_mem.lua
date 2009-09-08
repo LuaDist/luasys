@@ -10,13 +10,11 @@ do
 	local arr = assert(mem.pointer(8))  -- default type is "char"
 
 	for i = 0, 7 do arr[i] = 65 + i end
-	assert("ABCDEFGH" == mem.tostring(arr, 8))
+	assert("ABCDEFGH" == arr:tostring(8))
 
 	local s = "zstring"
 	arr[0] = s
-	if s ~= mem.tostring(arr, #s) then
-		error"mem.tostring"
-	end
+	assert(s == arr:tostring(#s))
 	print"OK"
 end
 
@@ -48,7 +46,7 @@ do
 		p[0] = s1
 		p:free()
 	end
-	f:seek(0)
+	f:seek(0, "set")
 	assert(f:read() == s1 .. s2)
 
 	f:close()
@@ -62,7 +60,7 @@ do
 	local buf = assert(mem.pointer():alloc())
 	local s = "append string to buffer"
 	buf:write(s)
-	assert(string.len(s) == buf:seek() and s == buf:getstring())
+	assert(string.len(s) == buf:seek() and s == buf:tostring())
 	buf:close()
 	print"OK"
 end
