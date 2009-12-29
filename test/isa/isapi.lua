@@ -6,10 +6,10 @@ local root = ...
 do
     local cpath = root:gsub([[^\\%?\]], "")
 
-    package.cpath = cpath .. "\\lua5.1.dll;"
-	.. cpath .. "\\?51.dll;"
+    package.cpath = package.cpath
 	.. cpath .. "\\?.dll;"
-	.. package.cpath
+	.. cpath .. "\\?51.dll;"
+	.. cpath .. "\\lua5.1.dll;"
 end
 
 

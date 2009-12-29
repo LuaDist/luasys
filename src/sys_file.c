@@ -84,6 +84,9 @@ sys_open (lua_State *L)
 	    const char *opt = lua_tostring(L, i);
 	    if (opt)
 		switch (opt[0]) {
+		case 'a':	/* append */
+		    append = 1;
+		    break;
 		case 'c':	/* creat */
 		    creation &= ~OPEN_EXISTING;
 		    creation |= CREATE_ALWAYS;
@@ -91,18 +94,12 @@ sys_open (lua_State *L)
 		case 'e':	/* excl */
 		    share = 0;
 		    break;
-		case 't':	/* trunc */
-		    creation &= ~OPEN_EXISTING;
-		    creation |= TRUNCATE_EXISTING;
-		    break;
-		case 'a':	/* append */
-		    append = 1;
-		    break;
 		case 's':	/* sync */
 		    attr |= FILE_FLAG_WRITE_THROUGH;
 		    break;
-		case 'r':	/* random access */
-		    attr |= FILE_FLAG_RANDOM_ACCESS;
+		case 't':	/* trunc */
+		    creation &= ~OPEN_EXISTING;
+		    creation |= TRUNCATE_EXISTING;
 		    break;
 		}
 	}
@@ -641,6 +638,12 @@ sys_tostring (lua_State *L)
 }
 
 
+#include "sys_comm.c"
+
+
+#define FD_METHODS \
+    {"handle",		sys_file}
+
 static luaL_reg fd_meth[] = {
     {"open",		sys_open},
     {"create",		sys_create},
@@ -659,12 +662,8 @@ static luaL_reg fd_meth[] = {
     {"flush",		sys_flush},
     {"nonblocking",	sys_nonblocking},
     {"__tostring",	sys_tostring},
-    {"comm_init",	sys_comm_init},
-    {"comm_control",	sys_comm_control},
-    {"comm_timeout",	sys_comm_timeout},
-    {"comm_queues",	sys_comm_queues},
-    {"comm_purge",	sys_comm_purge},
     {"__gc",		sys_close},
-    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
+    COMM_METHODS,
+    {SYS_BUFIO_TAG,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };

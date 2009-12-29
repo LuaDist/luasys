@@ -203,6 +203,6 @@ static luaL_reg ecb_meth[] = {
     {"read",		ecb_read},
     {"write",		ecb_write},
     {"header",		ecb_header},
-    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
+    {SYS_BUFIO_TAG,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };

@@ -171,7 +171,7 @@ sys_spawn (lua_State *L)
 
     /* redirect std. handles */
     if (std_redirect) {
-	HANDLE hProc = GetCurrentProcess();
+	const HANDLE hProc = GetCurrentProcess();
 
 	res = 0;  /* go to err by default */
 	si.dwFlags |= STARTF_USESTDHANDLES;
@@ -224,7 +224,6 @@ sys_exit (lua_State *L)
     exit (lua_isboolean(L, 1)
      ? (lua_toboolean(L, 1) ? EXIT_SUCCESS : EXIT_FAILURE)
      : lua_tointeger(L, 1));
-    return 0;
 }
 
 /*
@@ -340,6 +339,13 @@ proc_tostring (lua_State *L)
     return 1;
 }
 
+
+#define PROC_METHODS \
+    {"run",		sys_run}, \
+    {"spawn",		sys_spawn}, \
+    {"exit",		sys_exit}, \
+    {"getpid",		sys_getpid}, \
+    {"pid",		sys_pid}
 
 static luaL_reg pid_meth[] = {
     {"close",		proc_close},

@@ -4,6 +4,7 @@ static struct event *
 win32iocp_process (struct event_queue *evq, struct event *ev_ready)
 {
     const HANDLE iocph = evq->iocp.h;
+    const OVERLAPPED *wov = &evq->wov;
     msec_t now = 0L;
 
     for (; ; ) {
@@ -11,8 +12,8 @@ win32iocp_process (struct event_queue *evq, struct event *ev_ready)
 	struct event *ev;
 	OVERLAPPED *ovp;
 
-	if (GetQueuedCompletionStatus(iocph, &nr, (DWORD *) &ev, &ovp, 0L)) {
-	    ev->flags |= (&ev->rov == ovp) ? EVENT_READ_RES : EVENT_WRITE_RES;
+	if (GetQueuedCompletionStatus(iocph, &nr, (ULONG_PTR *) &ev, &ovp, 0L)) {
+	    ev->flags |= (ovp == wov) ? EVENT_WRITE_RES : EVENT_READ_RES;
 	} else {
 	    const int err = GetLastError();
 
@@ -26,7 +27,7 @@ win32iocp_process (struct event_queue *evq, struct event *ev_ready)
 		break;  /* error */
 	}
 
-	ev->index = 0;  /* have to set IOCP request */
+	ev->flags &= ~EVENT_PENDING;  /* have to install IOCP request */
 	ev->flags |= EVENT_ACTIVE;
 	if (ev->flags & EVENT_ONESHOT)
 	    evq_del(ev, 1);
@@ -45,23 +46,22 @@ win32iocp_process (struct event_queue *evq, struct event *ev_ready)
 int
 win32iocp_set (struct event *ev, unsigned int ev_flags)
 {
+    struct event_queue *evq = ev->wth->evq;
     WSABUF buf = {0};
 
     if (ev_flags & EVENT_READ) {
 	DWORD flags = 0;
 
-	memset(&ev->rov, 0, sizeof(OVERLAPPED) - sizeof(HANDLE));
-	if (WSARecv((sd_t) ev->fd, &buf, 1, NULL, &flags, &ev->rov, NULL) != SOCKET_ERROR
+	if (WSARecv((sd_t) ev->fd, &buf, 1, NULL, &flags, &evq->rov, NULL) != SOCKET_ERROR
 	 || WSAGetLastError() != WSA_IO_PENDING)
 	    return -1;
     }
     if (ev_flags & EVENT_WRITE) {
-	memset(&ev->wov, 0, sizeof(OVERLAPPED) - sizeof(HANDLE));
-	if (WSASend((sd_t) ev->fd, &buf, 1, NULL, 0, &ev->wov, NULL) != SOCKET_ERROR
+	if (WSASend((sd_t) ev->fd, &buf, 1, NULL, 0, &evq->wov, NULL) != SOCKET_ERROR
 	 || WSAGetLastError() != WSA_IO_PENDING)
 	    return -1;
     }
-    ev->index = 1;  /* IOCP request is installed */
+    ev->flags |= EVENT_PENDING;  /* IOCP request is installed */
     return 0;
 }
 

@@ -121,7 +121,7 @@ evq_del (struct event *ev, int reuse_fd)
 	return close(ev->fd);
 
     if (reuse_fd)
-     epoll_ctl(evq->epoll_fd, EPOLL_CTL_DEL, ev->fd, NULL);
+	epoll_ctl(evq->epoll_fd, EPOLL_CTL_DEL, ev->fd, NULL);
 
     if (npolls > NEVENT / 2 && npolls <= evq->max_polls / 4) {
 	void *p;

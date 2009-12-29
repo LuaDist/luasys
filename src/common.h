@@ -11,7 +11,7 @@
 
 #ifdef _WIN32
 
-#define _WIN32_WINNT	0x0500
+#define _WIN32_WINNT	0x0600
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -19,6 +19,10 @@
 
 #include <winsock2.h>
 #include <mmsystem.h>	/* timeGetTime */
+
+#ifndef ULONG_PTR
+#define ULONG_PTR	DWORD
+#endif
 
 #if (_WIN32_WINNT >= 0x0500)
 #define InitCriticalSection(cs)		InitializeCriticalSectionAndSpinCount(cs, 3000)
@@ -109,7 +113,7 @@ typedef int	sd_t;
  * Buffer Management
  */
 
-#define SYS_BUFIO_META	"bufio__"  /* key to indicate buffer i/o */
+#define SYS_BUFIO_TAG	"bufio__"  /* key to indicate buffer I/O */
 #define SYS_BUFSIZE	4096
 
 struct membuf;
@@ -169,7 +173,7 @@ struct sys_thread *sys_del_thread (struct sys_thread *td);
  * Object Events
  */
 
-#define SYS_TRIGGER_TAG	"__evq"
+#define SYS_TRIGGER_TAG	"evq__"
 
 typedef void *		sys_trigger_t;
 

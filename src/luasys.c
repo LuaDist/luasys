@@ -34,12 +34,13 @@ static const char *const sig_names[] = {
 
 
 /*
+ * Arguments: ..., [number]
  * Returns: string
  */
 static int
 sys_strerror (lua_State *L)
 {
-    const int err = SYS_ERRNO;
+    const int err = luaL_optint(L, -1, SYS_ERRNO);
 #ifndef _WIN32
     const char *s = strerror(err);
 #else
@@ -128,17 +129,10 @@ sys_limit_nfiles (lua_State *L)
 	    return 1;
 	}
     }
-#else
-    const int n = lua_gettop(L)
-     ? _setmaxstdio(lua_tointeger(L, 1))
-     : _getmaxstdio();
-
-    if (n > 0) {
-	lua_pushinteger(L, n);
-	return 1;
-    }
-#endif
     return sys_seterror(L, 0);
+#else
+    return 0;
+#endif
 }
 
 /*
@@ -176,55 +170,36 @@ sys_xpcall (lua_State *L)
 }
 
 
-#ifndef _WIN32
-#include "sys_unix.c"
-#endif
-
-#include "sys_comm.c"
 #include "sys_file.c"
-#include "sys_env.c"
 #include "sys_date.c"
+#include "sys_env.c"
+#include "sys_evq.c"
 #include "sys_fs.c"
 #include "sys_log.c"
 #include "sys_proc.c"
 #include "sys_rand.c"
-#include "sys_evq.c"
+
+#ifndef _WIN32
+#include "sys_unix.c"
+#endif
 
 
 static luaL_reg syslib[] = {
-    {"handle",		sys_file},
     {"strerror",	sys_strerror},
     {"nprocs",		sys_nprocs},
     {"limit_nfiles",	sys_limit_nfiles},
     {"toint",		sys_toint},
     {"xpcall",		sys_xpcall},
-    {"stat",		sys_stat},
-    {"utime",		sys_utime},
-    {"remove",		sys_remove},
-    {"rename",		sys_rename},
-    {"curdir",		sys_curdir},
-    {"mkdir",		sys_mkdir},
-    {"rmdir",		sys_rmdir},
-    {"dir",		sys_dir},
-    {"run",		sys_run},
-    {"spawn",		sys_spawn},
-    {"getpid",		sys_getpid},
-    {"exit",		sys_exit},
-    {"getenv",		sys_getenv},
-    {"setenv",		sys_setenv},
-    {"env",		sys_env},
-    {"msec",		sys_msec},
-    {"date",		sys_date},
-    {"time",		sys_time},
-    {"difftime",	sys_difftime},
-    {"period",		sys_period},
-    {"log",		sys_log},
-    {"pid",		sys_pid},
-    {"random",		sys_random},
-    {"event_queue",	sys_event_queue},
-#ifndef _WIN32
-    {"chroot",		sys_chroot},
-    {"daemonize",	sys_daemonize},
+    DATE_METHODS,
+    ENV_METHODS,
+    EVQ_METHODS,
+    FD_METHODS,
+    FS_METHODS,
+    LOG_METHODS,
+    PROC_METHODS,
+    RAND_METHODS,
+#ifdef UNIX_METHODS
+    UNIX_METHODS,
 #endif
     {NULL, NULL}
 };
@@ -237,13 +212,33 @@ static void
 createmeta (lua_State *L)
 {
     const int top = lua_gettop(L);
+    const struct meta_s {
+	const char *tname;
+	luaL_reg *meth;
+	int is_index;
+    } meta[] = {
+	{DIR_TYPENAME,		dir_meth,	0},
+	{EVQ_TYPENAME,		evq_meth,	1},
+	{FD_TYPENAME,		fd_meth,	1},
+	{PERIOD_TYPENAME,	period_meth,	1},
+	{PID_TYPENAME,		pid_meth,	1},
+	{RAND_TYPENAME,		rand_meth,	0},
+	{LOG_TYPENAME,		log_meth,	0},
+    };
+    int i;
 
-    luaL_newmetatable(L, FD_TYPENAME);
-    lua_pushvalue(L, -1);  /* push metatable */
-    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
-    luaL_register(L, NULL, fd_meth);
+    for (i = 0; i < (int) (sizeof(meta) / sizeof(struct meta_s)); ++i) {
+	luaL_newmetatable(L, meta[i].tname);
+	if (meta[i].is_index) {
+	    lua_pushvalue(L, -1);  /* push metatable */
+	    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
+	}
+	luaL_register(L, NULL, meta[i].meth);
+	lua_pop(L, 1);
+    }
 
-    /* predefined file handles */
+    /* Predefined file handles */
+    luaL_getmetatable(L, FD_TYPENAME);
     {
 	const char *std[] = {"stdin", "stdout", "stderr"};
 #ifdef _WIN32
@@ -253,7 +248,6 @@ createmeta (lua_State *L)
 	    GetStdHandle(STD_ERROR_HANDLE)
 	};
 #endif
-	int i;
 	for (i = 3; i--; ) {
 #ifndef _WIN32
 	    const fd_t fd = i;
@@ -269,31 +263,6 @@ createmeta (lua_State *L)
 	    lua_rawset(L, top);
 	}
     }
-
-    luaL_newmetatable(L, PERIOD_TYPENAME);
-    lua_pushvalue(L, -1);  /* push metatable */
-    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
-    luaL_register(L, NULL, period_meth);
-
-    luaL_newmetatable(L, LOG_TYPENAME);
-    luaL_register(L, NULL, log_meth);
-
-    luaL_newmetatable(L, PID_TYPENAME);
-    lua_pushvalue(L, -1);  /* push metatable */
-    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
-    luaL_register(L, NULL, pid_meth);
-
-    luaL_newmetatable(L, RAND_TYPENAME);
-    luaL_register(L, NULL, rand_meth);
-
-    luaL_newmetatable(L, DIR_TYPENAME);
-    luaL_register(L, NULL, dir_meth);
-
-    luaL_newmetatable(L, EVQ_TYPENAME);
-    lua_pushvalue(L, -1);  /* push metatable */
-    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
-    luaL_register(L, NULL, evq_meth);
-
     lua_settop(L, top);
 }
 
@@ -309,15 +278,16 @@ luaopen_sys (lua_State *L)
     luaopen_sys_mem(L);
     luaopen_sys_thread(L);
 #ifdef _WIN32
-    luaopen_sys_win32(L);
-
     /* Is Win32 NT platform? */
     {
 	OSVERSIONINFO osvi;
 
 	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-	is_WinNT = (GetVersionEx(&osvi) && osvi.dwPlatformId == VER_PLATFORM_WIN32_NT);
+	is_WinNT = (GetVersionEx(&osvi)
+	 && osvi.dwPlatformId == VER_PLATFORM_WIN32_NT);
     }
+
+    luaopen_sys_win32(L);
 #else
     /* Ignore sigpipe or it will crash us */
     signal_set(SIGPIPE, SIG_IGN);

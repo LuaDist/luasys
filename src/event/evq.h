@@ -24,18 +24,18 @@ struct event_queue;
 
 /* Event Queue environ. table reserved indexes */
 enum {
-    EVQ_FD_UDATA = 1,  /* {ev_id => fd_udata} */
-    EVQ_CALLBACK,  /* {ev_id => cb_fun} */
-    EVQ_ON_INTR,  /* cb_fun */
-    EVQ_CACHE,  /* {i => ev_udata} */
-    EVQ_EVENTS_ID
+    EVQ_FD_UDATA = 1,  /* table: event objects */
+    EVQ_CALLBACK,  /* table: callback and trigger functions */
+    EVQ_ON_INTR,  /* function */
+    EVQ_CACHE,  /* table: cache of events */
+    EVQ_EVENTS_ID  /* start of id. sequence */
 };
 
 /* Directory watcher filter flags */
 #define EVQ_DIRWATCH_MODIFY	0x01
 
 struct event {
-    struct event *next_ready, *next_signal;
+    struct event *next_ready, *next_object;
 
     /* timeout */
     struct event *prev, *next;
@@ -49,16 +49,18 @@ struct event {
 #define EVENT_WRITE		0x00000002
 #define EVENT_ONESHOT		0x00000004
 #define EVENT_DELETE		0x00000008
-#define EVENT_NOTSOCK		0x00000010
+#define EVENT_SOCKET		0x00000010
 #define EVENT_TIMER		0x00000020
 #define EVENT_PID		0x00000040
 #define EVENT_SIGNAL		0x00000080
 #define EVENT_WINMSG		0x00000100
 #define EVENT_DIRWATCH		0x00000200  /* directory watcher */
-#define EVENT_OBJECT		0x00000400  /* event of triggerable object */
+#define EVENT_OBJECT		0x00000400  /* triggerable object */
+#define EVENT_AIO		0x00000800
 #define EVENT_CALLBACK		0x00001000  /* callback exist */
-#define EVENT_ACCEPT		0x00004000  /* to avoid IOCP signalling of accept-socket */
-#define EVENT_IOCP		0x00008000
+#define EVENT_CALLBACK_THREAD	0x00002000  /* callback is coroutine */
+#define EVENT_SOCKET_ACC_CONN	0x00004000  /* IOCP: don't use listening or connecting socket */
+#define EVENT_PENDING		0x00008000  /* AIO request not completed */
 #define EVENT_MASK		0x0000FFFF
 /* triggered events (result of waiting) */
 #define EVENT_ACTIVE		0x00010000
@@ -106,7 +108,7 @@ int evq_ignore_signal (struct event_queue *evq, int signo, int ignore);
 int evq_interrupt (struct event_queue *evq);
 
 
-#ifndef WIN32
+#ifndef _WIN32
 
 #define evq_post_call(ev, ev_flags)
 

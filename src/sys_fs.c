@@ -426,6 +426,16 @@ sys_dir_next (lua_State *L)
 }
 
 
+#define FS_METHODS \
+    {"stat",		sys_stat}, \
+    {"utime",		sys_utime}, \
+    {"remove",		sys_remove}, \
+    {"rename",		sys_rename}, \
+    {"curdir",		sys_curdir}, \
+    {"mkdir",		sys_mkdir}, \
+    {"rmdir",		sys_rmdir}, \
+    {"dir",		sys_dir}
+
 static luaL_reg dir_meth[] = {
     {"__call",		sys_dir_next},
     {"__gc",		sys_dir_close},

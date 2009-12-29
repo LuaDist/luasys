@@ -82,7 +82,7 @@ win32thr_poll (struct event_queue *evq)
     return changed;
 }
 
-static WINAPI
+static DWORD WINAPI
 win32thr_wait (struct event_queue *evq)
 {
     CRITICAL_SECTION *head_cs;
@@ -172,7 +172,7 @@ win32thr_add (struct win32thr *wth, struct event *ev)
 
     ev->wth = wth;
 
-    if (ev->flags & EVENT_NOTSOCK)
+    if (!(ev->flags & EVENT_SOCKET))
 	hEvent = ev->fd;
     else {
 	const unsigned int ev_flags = ev->flags;
@@ -183,9 +183,9 @@ win32thr_add (struct win32thr *wth, struct event *ev)
 
 	res = 0;
 	if (ev_flags & EVENT_READ)
-	    res = (ev_flags & EVENT_ACCEPT) ? FD_ACCEPT : WFD_READ;
+	    res = (ev_flags & EVENT_SOCKET_ACC_CONN) ? FD_ACCEPT : WFD_READ;
 	if (ev_flags & EVENT_WRITE)
-	    res |= WFD_WRITE;
+	    res |= (ev_flags & EVENT_SOCKET_ACC_CONN) ? FD_CONNECT : WFD_WRITE;
 
 	if (WSAEventSelect((int) ev->fd, hEvent, res) == SOCKET_ERROR) {
 	    CloseHandle(hEvent);
@@ -215,7 +215,7 @@ win32thr_del (struct win32thr *wth, struct event *ev)
 	timeout_del(&wth->tq, ev);
 
     i = ev->index;
-    if (!(ev->flags & EVENT_NOTSOCK)) {
+    if (ev->flags & EVENT_SOCKET) {
 	HANDLE hEvent = wth->handles[i];
 	WSAEventSelect((int) ev->fd, hEvent, 0);
 	CloseHandle(hEvent);

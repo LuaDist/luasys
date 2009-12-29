@@ -41,6 +41,7 @@ evq_init (struct event_queue *evq)
     }
     wth->handles[0] = wth->signal;
     wth->evq = evq;
+    evq->rov.hEvent = evq->wov.hEvent = wth->signal;
 
     InitCriticalSection(&wth->cs);
 
@@ -71,7 +72,6 @@ evq_add (struct event_queue *evq, struct event *ev)
 {
     const unsigned int ev_flags = ev->flags;
     struct win32thr *wth = &evq->head;
-    int not_iocp, optlen;
 
     ev->wth = wth;
 
@@ -85,28 +85,10 @@ evq_add (struct event_queue *evq, struct event *ev)
 	return 0;
     }
 
-    /* find place for new event */
-    not_iocp = 1;
-    optlen = sizeof(int);
-    if (!(ev_flags & EVENT_NOTSOCK)) {
-	if (!getsockopt((sd_t) ev->fd, SOL_SOCKET, SO_TYPE,
-	 (char *) &not_iocp, &optlen)) {
-	    /* don't add listening socket to IOCP */
-	    if (evq->iocp.h) {
-		getsockopt((sd_t) ev->fd, SOL_SOCKET, SO_ACCEPTCONN,
-		 (void *) &not_iocp, &optlen);
-		ev->flags |= not_iocp ? EVENT_ACCEPT : 0;
-	    }
-	} else
-	    ev->flags |= EVENT_NOTSOCK;
-    }
-
-    if (!not_iocp) {
-	ev->rov.hEvent = ev->wov.hEvent = wth->signal;
-
-	if (CreateIoCompletionPort((HANDLE) ev->fd, evq->iocp.h, (DWORD) ev, 0)
+    if ((ev_flags & (EVENT_SOCKET | EVENT_SOCKET_ACC_CONN)) == EVENT_SOCKET) {
+	if (CreateIoCompletionPort((HANDLE) ev->fd, evq->iocp.h, (ULONG_PTR) ev, 0)
 	 && !win32iocp_set(ev, ev_flags)) {
-	    ev->flags |= EVENT_IOCP;
+	    ev->flags |= EVENT_AIO;
 	    evq->iocp.n++;
 	    evq->nevents++;
 	    return 0;
@@ -152,7 +134,7 @@ evq_del (struct event *ev, int reuse_fd)
     struct win32thr *wth = ev->wth;
     const unsigned int ev_flags = ev->flags;
 
-    if (ev_flags & (EVENT_IOCP | EVENT_SIGNAL | EVENT_WINMSG)) {
+    if (ev_flags & (EVENT_AIO | EVENT_SIGNAL | EVENT_WINMSG)) {
 	struct event_queue *evq = wth->evq;
 
 	ev->wth = NULL;
@@ -161,9 +143,8 @@ evq_del (struct event *ev, int reuse_fd)
 	if (ev->tq)
 	    timeout_del(&wth->tq, ev);
 
-	if (ev_flags & EVENT_IOCP) {
-	    /* TODO: How de-assosiate socket from IOCP? */
-	    if (reuse_fd && ev->index)
+	if (ev_flags & EVENT_AIO) {
+	    if (reuse_fd && (ev_flags & EVENT_PENDING))
 		CancelIo(ev->fd);
 	    evq->iocp.n--;
 	    return 0;
@@ -172,6 +153,7 @@ evq_del (struct event *ev, int reuse_fd)
 	if (ev_flags & EVENT_SIGNAL)
 	    return signal_del(ev);
 
+	/* if (ev_flags & EVENT_WINMSG) */
 	evq->win_msg = NULL;
 	return 0;
     }
@@ -187,13 +169,12 @@ evq_change (struct event *ev, unsigned int flags)
 {
     const unsigned int ev_flags = ev->flags;
 
-    if (ev_flags & EVENT_IOCP) {
-	if (ev->index)
+    if (ev_flags & EVENT_AIO) {
+	if (ev_flags & EVENT_PENDING)
 	    CancelIo(ev->fd);
 	return win32iocp_set(ev, flags);
     }
-
-    if (!(ev_flags & EVENT_NOTSOCK)) {
+    else {
 	struct win32thr *wth = ev->wth;
 	int event = 0;
 
@@ -344,7 +325,7 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	    const int ev_flags = ev->flags;
 	    unsigned int res = 0;
 
-	    if (ev_flags & EVENT_NOTSOCK) {
+	    if (!(ev_flags & EVENT_SOCKET)) {
 		if (ev_flags & EVENT_PID) {
 		    DWORD status;
 		    GetExitCodeProcess(ev->fd, &status);

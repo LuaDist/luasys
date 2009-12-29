@@ -100,3 +100,8 @@ sys_env (lua_State *L)
     return 1;
 }
 
+
+#define ENV_METHODS \
+    {"getenv",		sys_getenv}, \
+    {"setenv",		sys_setenv}, \
+    {"env",		sys_env}

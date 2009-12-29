@@ -97,7 +97,7 @@ signal_add (struct event_queue *evq, struct event *ev)
     struct event **sig_evp = &g_SigEvents[signo];
 
     if (*sig_evp)
-	ev->next_signal = *sig_evp;
+	ev->next_object = *sig_evp;
     else {
 #ifdef USE_KQUEUE
 	if (signal_kqueue(evq, signo, EV_ADD))
@@ -105,7 +105,7 @@ signal_add (struct event_queue *evq, struct event *ev)
 #endif
 	if (signal_set(signo, signal_handler))
 	    return -1;
-	ev->next_signal = NULL;
+	ev->next_object = NULL;
     }
     *sig_evp = ev;
     evq->nevents++;
@@ -119,7 +119,7 @@ signal_del (struct event_queue *evq, struct event *ev)
     struct event **sig_evp = &g_SigEvents[signo];
 
     if (*sig_evp == ev) {
-	if (!(*sig_evp = ev->next_signal)) {
+	if (!(*sig_evp = ev->next_object)) {
 	    int res = 0;
 
 #ifndef USE_KQUEUE
@@ -133,9 +133,9 @@ signal_del (struct event_queue *evq, struct event *ev)
     } else {
 	struct event *sig_ev = *sig_evp;
 
-	while (sig_ev->next_signal != ev)
-	    sig_ev = sig_ev->next_signal;
-	sig_ev->next_signal = ev->next_signal;
+	while (sig_ev->next_object != ev)
+	    sig_ev = sig_ev->next_object;
+	sig_ev->next_object = ev->next_object;
     }
     return 0;
 }
@@ -158,7 +158,7 @@ signal_actives (int signo, struct event *ev_ready, msec_t timeout)
 {
     struct event *ev = g_SigEvents[signo];
 
-    for (; ev; ev = ev->next_signal)
+    for (; ev; ev = ev->next_object)
 	ev_ready = signal_active(ev, ev_ready, timeout);
 
     return ev_ready;
@@ -176,7 +176,7 @@ signal_children (struct event *ev_ready, msec_t timeout)
 	if (pid == -1)
 	    return ev_ready;
 
-	for (ev = g_SigEvents[SIGCHLD]; ev; ev = ev->next_signal)
+	for (ev = g_SigEvents[SIGCHLD]; ev; ev = ev->next_object)
 	    if ((int) ev->fd == pid) {
 		ev->flags |= !WIFEXITED(status) ? EVENT_EOF_MASK_RES
 		 : ((unsigned int) WEXITSTATUS(status) << EVENT_EOF_SHIFT_RES);

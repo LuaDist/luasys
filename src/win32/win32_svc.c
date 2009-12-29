@@ -91,7 +91,7 @@ static struct {
     int accept_pause_cont;
 } g_Service;
 
-static WINAPI
+static void WINAPI
 svc_controller (DWORD code)
 {
     int accept = 0;
@@ -118,7 +118,7 @@ svc_controller (DWORD code)
     }
 }
 
-static WINAPI
+static void WINAPI
 svc_main (DWORD argc, char *argv[])
 {
     (void) argc;
@@ -142,7 +142,7 @@ svc_main (DWORD argc, char *argv[])
 }
 
 static DWORD WINAPI
-svc_start (char *name)
+svc_start (void *name)
 {
     SERVICE_TABLE_ENTRY table[] = {
 	{name, svc_main},

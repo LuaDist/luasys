@@ -53,11 +53,11 @@ signal_add (struct event_queue *evq, struct event *ev)
     struct event **sig_evp = &sig_events[signo];
 
     if (*sig_evp)
-	ev->next_signal = *sig_evp;
+	ev->next_object = *sig_evp;
     else {
 	if (signal_set(1))
 	    return -1;
-	ev->next_signal = NULL;
+	ev->next_object = NULL;
     }
     *sig_evp = ev;
     sig_ignore &= ~(1 << signo);  /* don't ignore signal */
@@ -73,15 +73,15 @@ signal_del (struct event *ev)
     struct event **sig_evp = &sig_events[signo];
 
     if (*sig_evp == ev) {
-	if (!(*sig_evp = ev->next_signal)
+	if (!(*sig_evp = ev->next_object)
 	 && !sig_ignore && signal_set(0))
 	    return -1;
     } else {
 	struct event *sig_ev = *sig_evp;
 
-	while (sig_ev->next_signal != ev)
-	    sig_ev = sig_ev->next_signal;
-	sig_ev->next_signal = ev->next_signal;
+	while (sig_ev->next_object != ev)
+	    sig_ev = sig_ev->next_object;
+	sig_ev->next_object = ev->next_object;
     }
     return 0;
 }
@@ -108,8 +108,10 @@ signal_process (unsigned int sig_ready, struct event *ev_ready, msec_t timeout)
 	if (sig_ready & 1) {
 	    struct event *ev = sig_events[signo];
 
-	    do ev_ready = signal_active(ev, ev_ready, timeout);
-	    while ((ev = ev->next_signal));
+	    do {
+		ev_ready = signal_active(ev, ev_ready, timeout);
+		ev = ev->next_object;
+	    } while (ev != NULL);
 	}
     return ev_ready;
 }

@@ -145,7 +145,8 @@ void
 sys_buffer_write_init (lua_State *L, int idx, struct sys_buffer *sb,
                        char *buf, size_t buflen)
 {
-    struct membuf *mb = mem_tobuffer(L, idx);
+    struct membuf *mb = buf ? mem_tobuffer(L, idx)
+     : checkudata(L, idx, MEM_TYPENAME);
 
     if (mb) {
 	sb->ptr.w = mb->data + mb->offset;
@@ -698,7 +699,7 @@ static luaL_reg mem_meth[] = {
     {"read",		membuf_read},
     {"flush",		membuf_flush},
     {"close",		membuf_close},
-    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
+    {SYS_BUFIO_TAG,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };
 

@@ -277,7 +277,7 @@ local function accept(evq, evid, fd)
     --fd:nonblocking(true)
     --fd:sockopt("tcp_nodelay", 1)
 
-    evid = evq:add(fd, 'r', process)
+    evid = evq:add_socket(fd, 'r', process)
     if not evid then
 	fd:close()
 	channels.put(channel)
@@ -296,7 +296,7 @@ for port, host in pairs(bind) do
     local addr = sock.inet_aton(host)
     assert(fd:bind(sock.addr_in(port, addr)))
     assert(fd:listen())
-    assert(evq:add(fd, 'r', accept))
+    assert(evq:add_socket(fd, 'r', accept))
 end
 
 -- Quit by Ctrl-C

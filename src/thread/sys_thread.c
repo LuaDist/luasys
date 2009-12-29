@@ -8,7 +8,9 @@
 
 #define thread_getid		GetCurrentThreadId
 
-#define THREAD_FUNC_API		WINAPI
+#define THREAD_FUNC_API		unsigned int WINAPI
+
+typedef unsigned int (WINAPI *thread_func_t) (void *);
 
 typedef unsigned int		thread_id_t;
 typedef DWORD 			thread_key_t;
@@ -20,6 +22,8 @@ typedef DWORD 			thread_key_t;
 #define thread_getid		pthread_self
 
 #define THREAD_FUNC_API		void *
+
+typedef void *(*thread_func_t) (void *);
 
 typedef pthread_t 		thread_id_t;
 typedef pthread_key_t		thread_key_t;
@@ -399,12 +403,12 @@ thread_run (lua_State *L)
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     res = pthread_create(&td->tid, &attr,
-     (void *(*) (void *)) thread_start, td);
+     (thread_func_t) thread_start, td);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
     hThr = (HANDLE) _beginthreadex(NULL, THREAD_STACK_SIZE,
-     thread_start, td, 0, &td->tid);
+     (thread_func_t) thread_start, td, 0, &td->tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif
@@ -543,12 +547,12 @@ thread_runvm (lua_State *L)
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     res = pthread_create(&vmtd->td.tid, &attr,
-     (void *(*) (void *)) thread_startvm, vmtd);
+     (thread_func_t) thread_startvm, vmtd);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
     hThr = (HANDLE) _beginthreadex(NULL, 0,
-     thread_startvm, vmtd, 0, &vmtd->td.tid);
+     (thread_func_t) thread_startvm, vmtd, 0, &vmtd->td.tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif

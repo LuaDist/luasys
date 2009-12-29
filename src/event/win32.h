@@ -34,8 +34,7 @@ struct win32iocp {
 
 #define EVENT_EXTRA							\
     struct win32thr *wth;						\
-    unsigned int index;							\
-    OVERLAPPED rov, wov;  /* for IOCP */
+    unsigned int index;
 
 #define EVQ_EXTRA							\
     HANDLE ack_event;							\
@@ -44,22 +43,24 @@ struct win32iocp {
     struct win32thr * volatile ready;					\
     struct win32thr head;						\
     int volatile nwakeup;  /* number of the re-polling threads */	\
-    int volatile sig_ready;  /* triggered signals */
-
-int win32iocp_set (struct event *ev, unsigned int ev_flags);
-
-#define evq_post_call(ev, ev_flags) do {				\
-	if ((ev_flags & EVENT_IOCP) && !(ev)->index)			\
-	    win32iocp_set((ev),						\
-	     (ev_flags & EVENT_READ_RES) ? EVENT_READ : 0		\
-	     | (ev_flags & EVENT_WRITE_RES) ? EVENT_WRITE : 0);		\
-	else if (ev_flags & EVENT_DIRWATCH)				\
-	    FindNextChangeNotification((ev)->fd);			\
-    } while (0)
+    int volatile sig_ready;  /* triggered signals */			\
+    OVERLAPPED rov, wov;  /* sockets IOCP */
 
 #define event_get_evq(ev)	(ev)->wth->evq
 #define event_deleted(ev)	((ev)->wth == NULL)
 #define iocp_is_empty(evq)	(!(evq)->iocp.n)
 #define evq_is_empty(evq)	(!((evq)->nevents || (evq)->head.next))
+
+#define evq_post_call(ev, ev_flags) do {				\
+	if (((ev)->flags & (EVENT_SOCKET | EVENT_AIO | EVENT_PENDING))	\
+	 == (EVENT_SOCKET | EVENT_AIO))					\
+	    win32iocp_set((ev),						\
+	     ((ev_flags) & EVENT_READ_RES) ? EVENT_READ : 0		\
+	     | ((ev_flags) & EVENT_WRITE_RES) ? EVENT_WRITE : 0);	\
+	else if ((ev_flags) & EVENT_DIRWATCH)				\
+	    FindNextChangeNotification((ev)->fd);			\
+    } while (0)
+
+int win32iocp_set (struct event *ev, unsigned int ev_flags);
 
 #endif

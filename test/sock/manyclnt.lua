@@ -13,27 +13,27 @@ local stdin, stdout, stderr = sys.stdin, sys.stdout, sys.stderr
 local askt, iskt = {}, 0
 
 local function ev_cb(evq, evid, fd, R)
-	local s = tostring(fd)
-	if not R then
-		fd:write(s)
-		evq:change(evid, 'r')
-	else
-		local line = fd:read()
-		if line ~= s then
-			error("got: " .. tostring(line)
-				.. " expected: " .. s)
-		end
-
-		iskt = iskt + 1
-		if iskt == nclnt then
-			-- close all sockets
-			for i = 1, nclnt do
-				evid = askt[i]
-				evq:del(evid)
-				fd:close()
-			end
-		end
+    local s = tostring(fd)
+    if not R then
+	assert(fd:write(s))
+	assert(evq:mod_socket(evid, 'r'))
+    else
+	local line = fd:read()
+	if line ~= s then
+	    error("got: " .. tostring(line)
+		.. " expected: " .. s)
 	end
+
+	iskt = iskt + 1
+	if iskt == nclnt then
+	    -- close all sockets
+	    for i = 1, nclnt do
+		evid = askt[i]
+		evq:del(evid)
+		fd:close()
+	    end
+	end
+    end
 end
 
 
@@ -43,20 +43,20 @@ local evq = assert(sys.event_queue())
 
 local addr = sock.addr_in(port, sock.inet_aton(host))
 for i = 1, nclnt do
-	local fd = sock.handle()
-	assert(fd:socket())
-	assert(fd:connect(addr))
+    local fd = sock.handle()
+    assert(fd:socket())
+    assert(fd:connect(addr))
 
-	local evid = evq:add(fd, 'w', ev_cb)
-	if not evid then
-		error(errorMessage)
-	end
-	askt[i] = evid
+    local evid = evq:add_socket(fd, 'w', ev_cb)
+    if not evid then
+	error(errorMessage)
+    end
+    askt[i] = evid
 end
 
 
 stdout:write(nclnt, " sessions opened in ", sys.msec() - start_time,
-	" msec\nPress any key to send data...\n")
+    " msec\nPress any key to send data...\n")
 stdin:read()
 
 local start_time = sys.msec()

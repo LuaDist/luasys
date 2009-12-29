@@ -47,3 +47,7 @@ sys_daemonize (lua_State *L)
     return sys_seterror(L, 0);
 }
 
+
+#define UNIX_METHODS \
+    {"chroot",		sys_chroot}, \
+    {"daemonize",	sys_daemonize}
