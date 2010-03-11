@@ -4,7 +4,7 @@ local sys = require"sys"
 local sock = require"sys.sock"
 
 
-local host, port = "127.0.0.1", 80
+local host, port = "127.0.0.1", 8080
 
 local stdin, stdout = sys.stdin, sys.stdout
 
@@ -12,9 +12,9 @@ local fd = sock.handle()
 assert(fd:socket())
 assert(fd:nonblocking(true))
 
-local addr = assert(sock.gethostbyname(host))
+local addr = assert(sock.getaddrinfo(host))
 
-local res, err = fd:connect(sock.addr_in(port, addr))
+local res, err = fd:connect(sock.addr():inet(port, addr))
 if res == nil then error(err) end
 
 if not res then

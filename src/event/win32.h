@@ -40,13 +40,14 @@ struct win32iocp {
     HANDLE ack_event;							\
     struct event *win_msg;  /* window messages handler */		\
     struct win32iocp iocp;						\
-    struct win32thr * volatile ready;					\
+    struct win32thr * volatile wth_ready;				\
     struct win32thr head;						\
     int volatile nwakeup;  /* number of the re-polling threads */	\
     int volatile sig_ready;  /* triggered signals */			\
     OVERLAPPED rov, wov;  /* sockets IOCP */
 
 #define event_get_evq(ev)	(ev)->wth->evq
+#define event_get_tq_head(ev)	(ev)->wth->tq
 #define event_deleted(ev)	((ev)->wth == NULL)
 #define iocp_is_empty(evq)	(!(evq)->iocp.n)
 #define evq_is_empty(evq)	(!((evq)->nevents || (evq)->head.next))

@@ -2,7 +2,7 @@
 
 #define MSG_MAXSIZE		512
 
-#define BUFF_INITIALSIZE	8 * MSG_MAXSIZE
+#define MSG_BUFF_INITIALSIZE	8 * MSG_MAXSIZE
 
 struct message_item {
     int type: 8;  /* lua type */
@@ -43,7 +43,7 @@ thread_msg_build (lua_State *L, struct message *msg)
 	    s = lua_tolstring(L, i, &len);
 
 	if (cp + len >= endp)
-	    luaL_argerror(L, i, "Message is too big");
+	    luaL_argerror(L, i, "message is too big");
 
 	switch (type) {
 	case LUA_TSTRING:
@@ -66,7 +66,7 @@ thread_msg_build (lua_State *L, struct message *msg)
 	    len = sizeof(item->v.ptr);
 	    break;
 	default:
-	    luaL_argerror(L, i, "Primitive type expected");
+	    luaL_argerror(L, i, "primitive type expected");
 	}
 	item->type = type;
 	item->len = len;
@@ -124,7 +124,7 @@ thread_msg_send (lua_State *L)
     struct message msg;
     thread_critsect_t *csp;
 
-    if (!vmtd) luaL_argerror(L, 1, "Thread Id. expected");
+    if (!vmtd) luaL_argerror(L, 1, "thread id. expected");
 
     msg.src_td = sys_get_thread();
     if (!msg.src_td) luaL_argerror(L, 0, "Threading not initialized");
@@ -152,7 +152,7 @@ thread_msg_send (lua_State *L)
 		buf.top = buf.idx;
 		buf.idx = 0;
 	    } else {
-		const int newlen = buf.len ? 2 * buf.len : BUFF_INITIALSIZE;
+		const int newlen = buf.len ? 2 * buf.len : MSG_BUFF_INITIALSIZE;
 		void *p = realloc(buf.ptr, newlen);
 
 		if (!p) {

@@ -12,6 +12,13 @@
 #define MAX_OPEN_FDS	20
 #endif
 
+struct sys_pid {
+    int id;
+#ifdef _WIN32
+    HANDLE h;
+#endif
+};
+
 
 /*
  * Arguments: [command (string)]
@@ -30,10 +37,11 @@ sys_run (lua_State *L)
 
     if (res != -1) {
 #else
-    char path[MAX_PATH];
+    char path[MAX_PATHNAME];
     const char *arg = NULL;
 
-    if (cmd && (arg = strchr(cmd, ' '))) {
+    arg = strchr(cmd, ' ');
+    if (arg) {
 	unsigned int n = arg - cmd;
 	if (n >= sizeof(path))
 	    return 0;
@@ -44,7 +52,7 @@ sys_run (lua_State *L)
     }
 
     sys_vm_leave();
-    res = (int) ShellExecute(0, 0, cmd, arg, 0, SW_SHOWNORMAL);
+    res = (int) ShellExecuteA(NULL, NULL, cmd, arg, NULL, 0);
     sys_vm_enter();
 
     if (res > 32) {
@@ -67,7 +75,7 @@ static int
 sys_spawn (lua_State *L)
 {
     const char *cmd = luaL_checkstring(L, 1);
-    fd_t *pidp = lua_isuserdata(L, 3) ? checkudata(L, 3, PID_TYPENAME) : NULL;
+    struct sys_pid *pidp = lua_isuserdata(L, 3) ? checkudata(L, 3, PID_TYPENAME) : NULL;
     fd_t *in_fdp = lua_isuserdata(L, 4) ? checkudata(L, 4, FD_TYPENAME) : NULL;
     fd_t *out_fdp = lua_isuserdata(L, 5) ? checkudata(L, 5, FD_TYPENAME) : NULL;
     fd_t *err_fdp = lua_isuserdata(L, 6) ? checkudata(L, 6, FD_TYPENAME) : NULL;
@@ -99,11 +107,12 @@ sys_spawn (lua_State *L)
 
     switch ((pid = fork())) {
     case 0:
+	/* restore sigpipe */
+	signal_set(SIGPIPE, SIG_DFL);
 	/* redirect standard handles */
 	if (in_fdp) dup2(*in_fdp, STDIN_FILENO);
 	if (out_fdp) dup2(*out_fdp, STDOUT_FILENO);
 	if (err_fdp) dup2(*err_fdp, STDERR_FILENO);
-
 	/* close other files */
 	{
 	    int n = sysconf(_SC_OPEN_MAX);
@@ -113,24 +122,24 @@ sys_spawn (lua_State *L)
 	}
 	execvp(cmd, (void *) argv);
 	perror(cmd);
-	_exit(-1);
+	_exit(127);
     case -1:
 	goto err;
     default:
-	if (pidp) *pidp = pid;
+	if (pidp) pidp->id = pid;
     }
 #else
     const int is_console = lua_isboolean(L, -1) && lua_toboolean(L, -1);
     const int std_redirect = (in_fdp || out_fdp || err_fdp);
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
-    char line[MAX_PATH*2];  /* command line */
+    char line[MAX_PATHNAME*2];  /* command line */
     int res;
 
     /* fill command line */
     {
 	char *cp = line;
-	int len = lua_strlen(L, 1);
+	int len = lua_rawlen(L, 1);
 
 	/* filename */
 	if (len >= sizeof(line) - 2)
@@ -193,7 +202,7 @@ sys_spawn (lua_State *L)
 	 hProc, &si.hStdError, 0, TRUE, DUPLICATE_SAME_ACCESS) && err_fdp)
 	    goto std_err;
     }
-    res = CreateProcess(NULL, line, NULL, NULL, TRUE,
+    res = CreateProcessA(NULL, line, NULL, NULL, TRUE,
      is_console ? CREATE_NEW_CONSOLE : 0, NULL, NULL, &si, &pi);
     if (std_redirect) {
  std_err:
@@ -203,10 +212,12 @@ sys_spawn (lua_State *L)
     }
     if (!res) goto err;
     CloseHandle(pi.hThread);
-    if (pidp)
-	*pidp = pi.hProcess;
-    else
+    if (!pidp)
 	CloseHandle(pi.hProcess);
+    else {
+	pidp->h = pi.hProcess;
+	pidp->id = pi.dwProcessId;
+    }
 #endif
     lua_pushboolean(L, 1);
     return 1;
@@ -216,18 +227,49 @@ sys_spawn (lua_State *L)
 #undef MAX_ARGS
 
 /*
- * Arguments: [success/failure (boolean) | status (number)]
+ * Arguments: [success/failure (boolean) | status (number), close_vm (boolean)]
  */
 static int
 sys_exit (lua_State *L)
 {
-    exit (lua_isboolean(L, 1)
-     ? (lua_toboolean(L, 1) ? EXIT_SUCCESS : EXIT_FAILURE)
-     : lua_tointeger(L, 1));
+    const int status = !lua_isboolean(L, 1) ? lua_tointeger(L, 1)
+     : (lua_toboolean(L, 1) ? EXIT_SUCCESS : EXIT_FAILURE);
+
+    if (lua_toboolean(L, 2))
+	lua_close(L);
+    exit(status);
 }
 
 /*
- * Returns: current process id. (number)
+ * Returns: system_time (microseconds), user_time (microseconds)
+ */
+static int
+sys_times (lua_State *L)
+{
+    lua_Number st, ut;
+#ifndef _WIN32
+    struct rusage ru;
+
+    if (!getrusage(RUSAGE_SELF, &ru)) {
+	st = ru.ru_stime.tv_sec * 1000000L + ru.ru_stime.tv_usec;
+	ut = ru.ru_utime.tv_sec * 1000000L + ru.ru_utime.tv_usec;
+#else
+    LARGE_INTEGER sl, ul;
+
+    if (GetProcessTimes(GetCurrentProcess(), NULL, NULL,
+     (FILETIME *) &sl, (FILETIME *) &ul)) {
+	st = (lua_Number) sl.QuadPart / 10;
+	ut = (lua_Number) ul.QuadPart / 10;
+#endif
+	lua_pushnumber(L, st);
+	lua_pushnumber(L, ut);
+	return 2;
+    }
+    return sys_seterror(L, 0);
+}
+
+/*
+ * Returns: process_identifier (number)
  */
 static int
 sys_getpid (lua_State *L)
@@ -242,34 +284,103 @@ sys_getpid (lua_State *L)
 
 
 /*
+ * Arguments: [process_identifier (number)]
  * Returns: pid_udata
  */
 static int
 sys_pid (lua_State *L)
 {
-    lua_boxinteger(L, -1);
+    const int id = luaL_optinteger(L, 1, -1);
+    struct sys_pid *pidp = lua_newuserdata(L, sizeof(struct sys_pid));
+
     luaL_getmetatable(L, PID_TYPENAME);
     lua_setmetatable(L, -2);
+
+    pidp->id = id;
+#ifdef _WIN32
+    if (id != -1) {
+	if (id == (int) GetCurrentProcessId()) {
+	    pidp->h = GetCurrentProcess();
+	}
+	else {
+	    pidp->h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, id);
+	    if (pidp->h == NULL)
+		return sys_seterror(L, 0);
+	}
+    }
+#endif
     return 1;
 }
 
 /*
  * Arguments: pid_udata
- * Returns: [boolean]
  */
 static int
 proc_close (lua_State *L)
 {
-    fd_t *pidp = checkudata(L, 1, PID_TYPENAME);
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
 
-    if (*pidp != (fd_t) -1) {
+    if (pidp->id != -1) {
 #ifdef _WIN32
-	lua_pushboolean(L, CloseHandle(*pidp));
+	CloseHandle(pidp->h);
+	pidp->h = NULL;
 #endif
-	*pidp = (fd_t) -1;
+	pidp->id = -1;
+    }
+    return 0;
+}
+
+/*
+ * Arguments: pid_udata
+ * Returns: process_identifier (number)
+ */
+static int
+proc_id (lua_State *L)
+{
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
+
+    if (pidp->id != -1) {
+	lua_pushinteger(L, pidp->id);
 	return 1;
     }
     return 0;
+}
+
+/*
+ * Arguments: pid_udata, priority (string: "realtime", "high", "normal", "idle")
+ * Returns: boolean
+ */
+static int
+proc_priority (lua_State *L)
+{
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
+    const char *s = luaL_checkstring(L, 2);
+    int prio = 0;
+
+    switch (*s) {
+#ifndef _WIN32
+    case 'r': prio = -20; break;
+    case 'h': prio = -10; break;
+    case 'n': prio = 0; break;
+    case 'i': prio = 19; break;
+#else
+    case 'r': prio = REALTIME_PRIORITY_CLASS; break;
+    case 'h': prio = HIGH_PRIORITY_CLASS; break;
+    case 'n': prio = NORMAL_PRIORITY_CLASS; break;
+    case 'i': prio = IDLE_PRIORITY_CLASS; break;
+#endif
+    default: luaL_argerror(L, 1, "invalid option");
+    }
+
+#ifndef _WIN32
+    if (!setpriority(PRIO_PROCESS, pidp->id, prio)) {
+#else
+    if (SetPriorityClass(pidp->h, prio)) {
+#endif
+        lua_pushboolean(L, 1);
+	return 1;
+    }
+    return sys_seterror(L, 0);
 }
 
 /*
@@ -279,20 +390,20 @@ proc_close (lua_State *L)
 static int
 proc_wait (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
-
-#ifndef _WIN32
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
     int status;
 
-    while ((waitpid(pid, &status, 0)) == -1 && SYS_ERRNO == EINTR)
+    sys_vm_leave();
+#ifndef _WIN32
+    while ((waitpid(pidp->id, &status, 0)) == -1 && SYS_ERRNO == EINTR)
 	continue;
     status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #else
-    DWORD status;
-
-    WaitForSingleObject(pid, INFINITE);
-    GetExitCodeProcess(pid, &status);
+    WaitForSingleObject(pidp->h, INFINITE);
+    GetExitCodeProcess(pidp->h, (DWORD *) &status);
 #endif
+    sys_vm_enter();
+
     lua_pushinteger(L, status);
     return 1;
 }
@@ -304,18 +415,17 @@ proc_wait (lua_State *L)
 static int
 proc_kill (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
 #ifndef _WIN32
     const int signo = sig_flags[luaL_checkoption(L, 2, "TERM", sig_names)];
 #endif
 
-    if (pid == (fd_t) -1)
-	return 0;
+    if (pidp->id == -1) return 0;
 
 #ifndef _WIN32
-    if (!kill(pid, signo)) {
+    if (!kill(pidp->id, signo)) {
 #else
-    if (TerminateProcess(pid, (unsigned int) -1)) {
+    if (TerminateProcess(pidp->h, (unsigned int) -1)) {
 #endif
 	lua_settop(L, 1);
 	return 1;
@@ -330,10 +440,10 @@ proc_kill (lua_State *L)
 static int
 proc_tostring (lua_State *L)
 {
-    fd_t pid = (fd_t) lua_unboxinteger(L, 1, PID_TYPENAME);
+    struct sys_pid *pidp = checkudata(L, 1, PID_TYPENAME);
 
-    if (pid != (fd_t) -1)
-	lua_pushfstring(L, PID_TYPENAME " (%d)", (int) pid);
+    if (pidp->id != -1)
+	lua_pushfstring(L, PID_TYPENAME " (%d)", pidp->id);
     else
 	lua_pushliteral(L, PID_TYPENAME " (closed)");
     return 1;
@@ -344,11 +454,14 @@ proc_tostring (lua_State *L)
     {"run",		sys_run}, \
     {"spawn",		sys_spawn}, \
     {"exit",		sys_exit}, \
+    {"times",		sys_times}, \
     {"getpid",		sys_getpid}, \
     {"pid",		sys_pid}
 
 static luaL_reg pid_meth[] = {
     {"close",		proc_close},
+    {"id",		proc_id}, \
+    {"priority",	proc_priority},
     {"wait",		proc_wait},
     {"kill",		proc_kill},
     {"__tostring",	proc_tostring},

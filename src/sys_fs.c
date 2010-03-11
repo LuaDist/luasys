@@ -1,10 +1,8 @@
 /* Lua System: File System */
 
-#ifdef _WIN32
-#include <sys/utime.h>
-#else
+#ifndef _WIN32
+#include <sys/statvfs.h>
 #include <dirent.h>
-#include <utime.h>
 #endif
 
 #define DIR_TYPENAME	"sys.dir"
@@ -14,15 +12,15 @@ struct dir {
 #ifndef _WIN32
     DIR *data;
 #else
-    int is_drive;
+    int is_root;  /* list logical drives? */
     HANDLE h;
-    WIN32_FIND_DATA data;
+    WIN32_FIND_DATAW data;
 #endif
 };
 
 
 /*
- * Arguments: pathname (string), [more_info (boolean)]
+ * Arguments: path (string), [more_info (boolean)]
  * Returns: [is_directory (boolean), is_file (boolean),
  *	is_read (boolean), is_write (boolean), is_execute (boolean),
  *	[is_link (boolean), size (number),
@@ -31,13 +29,13 @@ struct dir {
 static int
 sys_stat (lua_State *L)
 {
-    const char *pathname = luaL_checkstring(L, 1);
+    const char *path = luaL_checkstring(L, 1);
     const int more_info = lua_toboolean(L, 2);
     struct stat st;
     int res;
 
     sys_vm_leave();
-    res = stat(pathname, &st);
+    res = stat(path, &st);
     sys_vm_enter();
 
     if (!res) {
@@ -86,7 +84,18 @@ sys_stat (lua_State *L)
 #ifndef _WIN32
 	    lua_pushboolean(L, S_ISLNK(st.st_mode));
 #else
-	    size_t attr = GetFileAttributes(pathname);
+	    DWORD attr;
+	    {
+		void *os_path = utf8_to_filename(path);
+		if (!os_path)
+		    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+		attr = is_WinNT
+		 ? GetFileAttributesW(os_path)
+		 : GetFileAttributesA(os_path);
+
+		free(os_path);
+	    }
 	    lua_pushboolean(L, attr > 0 && (attr & FILE_ATTRIBUTE_REPARSE_POINT));
 #endif
 	    lua_pushnumber(L, st.st_size);  /* size in bytes */
@@ -101,47 +110,82 @@ sys_stat (lua_State *L)
 }
 
 /*
- * Arguments: filename (string), [modify_time (number)]
- * Returns: [boolean]
+ * Arguments: path (string)
+ * Returns: [total_bytes (number), available_bytes (number), free_bytes (number)]
  */
 static int
-sys_utime (lua_State *L)
+sys_statfs (lua_State *L)
 {
-    const char *filename = luaL_checkstring(L, 1);
-    struct utimbuf utb, *bp;
+    const char *path = luaL_checkstring(L, 1);
+    int64_t ntotal, navail, nfree;
     int res;
 
-    if (lua_gettop(L) == 1)
-	bp = NULL;
-    else {
-	utb.modtime = utb.actime = (time_t) lua_tointeger(L, 2);
-	bp = &utb;
+#ifndef _WIN32
+    struct statvfs buf;
+
+    res = statvfs(path, &buf);
+
+    ntotal = buf.f_blocks * buf.f_frsize;
+    nfree = buf.f_bfree * buf.f_bsize;
+    navail = buf.f_bavail * buf.f_bsize;
+#else
+    ULARGE_INTEGER na, nt, nf;
+
+    SetErrorMode(SEM_FAILCRITICALERRORS);  /* for floppy disks */
+    {
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	res = is_WinNT
+	 ? !GetDiskFreeSpaceExW(os_path, &na, &nt, &nf)
+	 : !GetDiskFreeSpaceExA(os_path, &na, &nt, &nf);
+
+	free(os_path);
     }
-    res = !utime(filename, bp);
-    if (res || SYS_ERRNO == ENOENT) {
-	lua_pushboolean(L, res);
-	return 1;
+
+    ntotal = (int64_t) nt.QuadPart;
+    nfree = (int64_t) nf.QuadPart;
+    navail = (int64_t) na.QuadPart;
+#endif
+    if (!res) {
+	lua_pushnumber(L, (lua_Number) ntotal);
+	lua_pushnumber(L, (lua_Number) navail);
+	lua_pushnumber(L, (lua_Number) nfree);
+	return 3;
     }
     return sys_seterror(L, 0);
 }
 
 /*
- * Arguments: filename (string)
+ * Arguments: path (string)
  * Returns: [boolean]
  */
 static int
 sys_remove (lua_State *L)
 {
-    const char *filename = luaL_checkstring(L, 1);
+    const char *path = luaL_checkstring(L, 1);
     int res;
 
-    sys_vm_leave();
 #ifndef _WIN32
-    res = remove(filename);
-#else
-    res = !DeleteFile(filename);
-#endif
+    sys_vm_leave();
+    res = remove(path);
     sys_vm_enter();
+#else
+    {
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	sys_vm_leave();
+	res = is_WinNT
+	 ? !DeleteFileW(os_path)
+	 : !DeleteFileA(os_path);
+	sys_vm_enter();
+
+	free(os_path);
+    }
+#endif
 
     if (!res) {
 	lua_pushboolean(L, 1);
@@ -151,7 +195,7 @@ sys_remove (lua_State *L)
 }
 
 /*
- * Arguments: existing_filename (string), new_filename (string)
+ * Arguments: existing_path (string), new_path (string)
  * Returns: [boolean]
  */
 static int
@@ -161,13 +205,30 @@ sys_rename (lua_State *L)
     const char *new = luaL_checkstring(L, 2);
     int res;
 
-    sys_vm_leave();
 #ifndef _WIN32
+    sys_vm_leave();
     res = rename(old, new);
-#else
-    res = !MoveFile(old, new);
-#endif
     sys_vm_enter();
+#else
+    {
+	void *os_old = utf8_to_filename(old);
+	void *os_new = utf8_to_filename(new);
+	if (!os_old || !os_new) {
+	    free(os_old);
+	    free(os_new);
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+	}
+
+	sys_vm_leave();
+	res = is_WinNT
+	 ? !MoveFileW(os_old, os_new)
+	 : !MoveFileA(os_old, os_new);
+	sys_vm_enter();
+
+	free(os_old);
+	free(os_new);
+    }
+#endif
 
     if (!res) {
 	lua_pushboolean(L, 1);
@@ -177,35 +238,102 @@ sys_rename (lua_State *L)
 }
 
 /*
- * Arguments: [pathname (string)]
+ * Arguments: path (string)
+ * Returns: [string]
+ */
+static int
+sys_realpath (lua_State *L)
+{
+    const char *path = luaL_checkstring(L, 1);
+
+#ifndef _WIN32
+    char real[PATH_MAX];
+
+    if (realpath(path, real)) {
+	lua_pushstring(L, real);
+	return 1;
+    }
+#else
+    void *os_path = utf8_to_filename(path);
+    if (!os_path)
+	return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+    {
+	WCHAR os_real[MAX_PATHNAME];
+	const int n = is_WinNT
+	 ? GetFullPathNameW(os_path, MAX_PATHNAME, os_real, NULL)
+	 : GetFullPathNameA(os_path, MAX_PATHNAME, (char *) os_real, NULL);
+
+	free(os_path);
+
+	if (n != 0 && n < MAX_PATHNAME) {
+	    void *real = filename_to_utf8(os_real);
+	    if (!real)
+		return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	    lua_pushstring(L, real);
+	    free(real);
+	    return 1;
+	}
+    }
+#endif
+    return sys_seterror(L, 0);
+}
+
+/*
+ * Arguments: [path (string)]
  * Returns: [boolean | pathname (string)]
  */
 static int
 sys_curdir (lua_State *L)
 {
-    const char *pathname = lua_tostring(L, 1);
+    const char *path = lua_tostring(L, 1);
 
-    if (pathname) {
+    if (path) {
+	int res;
 #ifndef _WIN32
-	if (!chdir(pathname)) {
+	res = chdir(path);
 #else
-	if (SetCurrentDirectory(pathname)) {
+	{
+	    void *os_path = utf8_to_filename(path);
+	    if (!os_path)
+		return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	    res = is_WinNT
+	     ? !SetCurrentDirectoryW(os_path)
+	     : !SetCurrentDirectoryA(os_path);
+
+	    free(os_path);
+	}
 #endif
+	if (!res) {
 	    lua_pushboolean(L, 1);
 	    return 1;
 	}
     } else {
-	char path[MAX_PATH];
 #ifndef _WIN32
-	if (getcwd(path, MAX_PATH)) {
-	    lua_pushstring(L, path);
-#else
-	int n = GetCurrentDirectory(MAX_PATH, path);
-	if (n && n < MAX_PATH) {
-	    lua_pushlstring(L, path, n);
-#endif
+	char dir[MAX_PATHNAME];
+
+	if (getcwd(dir, MAX_PATHNAME)) {
+	    lua_pushstring(L, dir);
 	    return 1;
 	}
+#else
+	WCHAR os_dir[MAX_PATHNAME];
+	const int n = is_WinNT
+	 ? GetCurrentDirectoryW(MAX_PATHNAME, os_dir)
+	 : GetCurrentDirectoryA(MAX_PATHNAME, (char *) os_dir);
+
+	if (n != 0 && n < MAX_PATHNAME) {
+	    void *dir = filename_to_utf8(os_dir);
+	    if (!dir)
+		return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	    lua_pushstring(L, dir);
+	    free(dir);
+	    return 1;
+	}
+#endif
     }
     return sys_seterror(L, 0);
 }
@@ -218,14 +346,26 @@ static int
 sys_mkdir (lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
+    int res;
 
 #ifndef _WIN32
     mode_t perm = (mode_t) lua_tointeger(L, 2);
 
-    if (!mkdir(path, perm)) {
+    res = mkdir(path, perm);
 #else
-    if (CreateDirectory(path, NULL)) {
+    {
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	res = is_WinNT
+	 ? !CreateDirectoryW(os_path, NULL)
+	 : !CreateDirectoryA(os_path, NULL);
+
+	free(os_path);
+    }
 #endif
+    if (!res) {
 	lua_pushboolean(L, 1);
 	return 1;
     }
@@ -240,12 +380,24 @@ static int
 sys_rmdir (lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
+    int res;
 
 #ifndef _WIN32
-    if (!rmdir(path)) {
+    res = rmdir(path);
 #else
-    if (RemoveDirectory(path)) {
+    {
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	res = is_WinNT
+	 ? !RemoveDirectoryW(os_path)
+	 : !RemoveDirectoryA(os_path);
+
+	free(os_path);
+    }
 #endif
+    if (!res) {
 	lua_pushboolean(L, 1);
 	return 1;
     }
@@ -265,22 +417,21 @@ sys_dir_open (lua_State *L, const int idx, struct dir *dp)
     if (dp->data)
 	closedir(dp->data);
     dp->data = opendir(*dir == '\0' ? "/" : dir);
-    return dp->data ? 1 : 0;
+    if (dp->data) return 1;
 #else
-    char *filename = dp->data.cFileName;
+    char *filename = (char *) dp->data.cFileName;
 
-    if (*dir == '\0') {
-	dp->is_drive = 1;
-
+    if (*dir == '\0' || (*dir == '/' && dir[1] == '\0')) {
 	/* list drive letters */
 	*filename++ = 'A' - 1;
 	*filename++ = ':';
 	*filename++ = '\\';
 	*filename = '\0';
-    } else {
-	const int len = lua_strlen(L, idx);
 
-	dp->is_drive = 0;
+	dp->is_root = 1;
+	return 1;
+    } else {
+	const int len = lua_rawlen(L, idx);
 
 	/* build search path */
 	if (len >= MAX_PATH - 2)  /* concat "\\*" */
@@ -294,10 +445,26 @@ sys_dir_open (lua_State *L, const int idx, struct dir *dp)
 
 	if (dp->h != INVALID_HANDLE_VALUE)
 	    FindClose(dp->h);
-	dp->h = FindFirstFile((const char *) dp->data.cFileName, &dp->data);
+
+	{
+	    void *os_path = utf8_to_filename((char *) dp->data.cFileName);
+	    if (!os_path)
+		return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	    dp->h = is_WinNT
+	     ? FindFirstFileW(os_path, &dp->data)
+	     : FindFirstFileA(os_path, (WIN32_FIND_DATAA *) &dp->data);
+
+	    free(os_path);
+	}
+
+	if (dp->h != INVALID_HANDLE_VALUE) {
+	    dp->is_root = 0;
+	    return 1;
+	}
     }
-    return 1;
 #endif
+    return sys_seterror(L, 0);
 }
 
 /*
@@ -346,7 +513,7 @@ sys_dir_close (lua_State *L)
  *
  * Returns: [filename (string), is_directory (boolean)]
  * |
- * Returns (win32): [drive letter (string: A: .. Z:), drive type (string)]
+ * Returns (win32): [drive_letter (string: A .. Z), drive_type (string)]
  */
 static int
 sys_dir_next (lua_State *L)
@@ -380,15 +547,13 @@ sys_dir_next (lua_State *L)
 	lua_pushboolean(L, entry->d_type & DT_DIR);
 	return 2;
 #else
-	int is_dots;
+	filename = (char *) dp->data.cFileName;
 
-	filename = dp->data.cFileName;
-
-	if (dp->is_drive) {
+	if (dp->is_root) {
 	    while (++*filename <= 'Z') {
 		const char *type;
 
-		switch (GetDriveType(filename)) {
+		switch (GetDriveTypeA(filename)) {
 		case DRIVE_REMOVABLE:	type = "removable"; break;
 		case DRIVE_FIXED:	type = "fixed"; break;
 		case DRIVE_REMOTE:	type = "remote"; break;
@@ -405,21 +570,32 @@ sys_dir_next (lua_State *L)
 
 	if (dp->h == INVALID_HANDLE_VALUE)
 	    return 0;
-	do {
-	    is_dots = 1;
-	    if (!(filename[0] == '.' && (filename[1] == '\0'
-	     || (filename[1] == '.' && filename[2] == '\0')))) {
-		lua_pushstring(L, (const char *) filename);
-		lua_pushboolean(L,
-		 dp->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
-		is_dots = 0;
+	for (; ; ) {
+	    int is_dots = 1;
+	    {
+		char *path = filename_to_utf8(filename);
+		if (!path)
+		    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+		if (!(path[0] == '.' && (path[1] == '\0'
+		 || (path[1] == '.' && path[2] == '\0')))) {
+		    lua_pushstring(L, path);
+		    lua_pushboolean(L,
+		     dp->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+		    is_dots = 0;
+		}
+
+		free(path);
 	    }
-	    if (!FindNextFile(dp->h, &dp->data)) {
+	    if (is_WinNT
+	     ? !FindNextFileW(dp->h, &dp->data)
+	     : !FindNextFileA(dp->h, (WIN32_FIND_DATAA *) &dp->data)) {
 		FindClose(dp->h);
 		dp->h = INVALID_HANDLE_VALUE;
 		return is_dots ? 0 : 2;
 	    }
-	} while (is_dots);
+	    if (!is_dots) break;
+	}
 	return 2;
 #endif
     }
@@ -428,9 +604,10 @@ sys_dir_next (lua_State *L)
 
 #define FS_METHODS \
     {"stat",		sys_stat}, \
-    {"utime",		sys_utime}, \
+    {"statfs",		sys_statfs}, \
     {"remove",		sys_remove}, \
     {"rename",		sys_rename}, \
+    {"realpath",	sys_realpath}, \
     {"curdir",		sys_curdir}, \
     {"mkdir",		sys_mkdir}, \
     {"rmdir",		sys_rmdir}, \

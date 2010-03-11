@@ -1,10 +1,12 @@
 /* Lua System: Date & Time */
 
-#include <time.h>
-
 #define PERIOD_TYPENAME	"sys.period"
 
-#ifdef _WIN32
+#ifndef _WIN32
+#if defined(_POSIX_MONOTONIC_CLOCK) && _POSIX_MONOTONIC_CLOCK >= 0
+#define USE_CLOCK_GETTIME
+#endif
+#else
 struct period {
     LARGE_INTEGER start, freq;
 };
@@ -15,9 +17,15 @@ struct period {
 msec_t
 get_milliseconds (void)
 {
+#ifdef USE_CLOCK_GETTIME
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (ts.tv_sec * 1000 + ts.tv_nsec / 1000000L);
+#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (tv.tv_sec * 1000 + tv.tv_usec / 1000);
+#endif
 }
 #endif
 
@@ -123,9 +131,8 @@ sys_time (lua_State *L)
 	ts.tm_year = date_getfield(L, "year", -2) - 1900;
 	ts.tm_isdst = date_getfield(L, "isdst", -1);
 	t = mktime(&ts);
-	if (t == (time_t) -1) {
+	if (t == (time_t) -1)
 	    return sys_seterror(L, 0);
-	}
     } else
 	t = time(NULL);  /* current time */
     lua_pushnumber(L, t);
@@ -152,7 +159,11 @@ static int
 sys_period (lua_State *L)
 {
 #ifndef _WIN32
+#ifdef USE_CLOCK_GETTIME
+    lua_newuserdata(L, sizeof(struct timespec));
+#else
     lua_newuserdata(L, sizeof(struct timeval));
+#endif
 #else
     struct period *p = lua_newuserdata(L, sizeof(struct period));
 
@@ -170,24 +181,43 @@ sys_period (lua_State *L)
 static int
 period_start (lua_State *L)
 {
-#ifndef _WIN32
-    gettimeofday(checkudata(L, 1, PERIOD_TYPENAME), NULL);
-#else
-    struct period *p = checkudata(L, 1, PERIOD_TYPENAME);
+    void *p = checkudata(L, 1, PERIOD_TYPENAME);
 
-    QueryPerformanceCounter(&p->start);
+#ifndef _WIN32
+#ifdef USE_CLOCK_GETTIME
+    clock_gettime(CLOCK_MONOTONIC, p);
+#else
+    gettimeofday(p, NULL);
+#endif
+#else
+    QueryPerformanceCounter(&((struct period *) p)->start);
 #endif
     return 1;
 }
 
 /*
  * Arguments: period_udata
- * Returns: number (milliseconds)
+ * Returns: microseconds (number)
  */
 static int
 period_get (lua_State *L)
 {
+    lua_Number usec;
+
 #ifndef _WIN32
+#ifdef USE_CLOCK_GETTIME
+    struct timespec te, *ts = checkudata(L, 1, PERIOD_TYPENAME);
+
+    clock_gettime(CLOCK_MONOTONIC, &te);
+
+    te.tv_sec -= ts->tv_sec;
+    te.tv_nsec -= ts->tv_nsec;
+    if (te.tv_nsec < 0) {
+	te.tv_sec--;
+	te.tv_nsec += 1000000000L;
+    }
+    usec = (lua_Number) (te.tv_sec * 1000000000L + te.tv_nsec) / 1000;
+#else
     struct timeval te, *ts = checkudata(L, 1, PERIOD_TYPENAME);
 
     gettimeofday(&te, NULL);
@@ -196,17 +226,18 @@ period_get (lua_State *L)
     te.tv_usec -= ts->tv_usec;
     if (te.tv_usec < 0) {
 	te.tv_sec--;
-	te.tv_usec += 1000000;
+	te.tv_usec += 1000000L;
     }
-    lua_pushnumber(L, (lua_Number) (te.tv_sec * 1000000L + te.tv_usec) / 1000.0);
+    usec = (lua_Number) (te.tv_sec * 1000000L + te.tv_usec);
+#endif
 #else
     struct period *p = checkudata(L, 1, PERIOD_TYPENAME);
     LARGE_INTEGER stop;
 
     QueryPerformanceCounter(&stop);
-    lua_pushnumber(L, (lua_Number) (stop.QuadPart - p->start.QuadPart) * 1000.0
-     / (lua_Number) p->freq.QuadPart);
+    usec = (lua_Number) (stop.QuadPart - p->start.QuadPart) / p->freq.QuadPart;
 #endif
+    lua_pushnumber(L, usec);
     return 1;
 }
 

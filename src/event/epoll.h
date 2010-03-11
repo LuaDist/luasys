@@ -14,8 +14,6 @@
 #define EVQ_EXTRA							\
     struct timeout_queue *tq;						\
     fd_t sig_fd[2];  /* pipe to notify about signals */			\
-    int epoll_fd;  /* epoll descriptor */				\
-    unsigned int npolls, max_polls;					\
-    struct epoll_event *ep_events;
+    int epoll_fd;  /* epoll descriptor */
 
 #endif

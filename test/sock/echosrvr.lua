@@ -17,7 +17,7 @@ local stderr = sys.stderr
 -- Pool of sockets
 local socket_get, socket_put
 do
-    local pool = {__mode = "v", n = 0}
+    local pool = setmetatable({n = 0}, {__mode = "v"})
 
     socket_get = function()
 	local n = pool.n
@@ -94,11 +94,10 @@ local function accept(evq, evid, fd)
 
 	if DEBUG then
 	    local port, addr = sock.addr_in(peer)
-	    stderr:write("Peer: " .. sock.inet_ntoa(addr)
-		 .. ":" .. port .. "\n")
+	    stderr:write("Peer: ", sock.inet_ntoa(addr), ":", port, "\n")
 	end
     else
-	stderr:write("accept: " .. errorMessage)
+	stderr:write("accept: ", errorMessage, "\n")
     end
 end
 
@@ -106,12 +105,13 @@ end
 local evq = assert(sys.event_queue())
 
 print("Binding servers...")
+local saddr = sock.addr()
 for port, host in pairs(bind) do
     local fd = sock.handle()
     assert(fd:socket())
     assert(fd:sockopt("reuseaddr", 1))
-    local addr = sock.inet_aton(host)
-    assert(fd:bind(sock.addr_in(port, addr)))
+    assert(saddr:inet(port, sock.inet_pton(host)))
+    assert(fd:bind(saddr))
     assert(fd:listen())
     assert(evq:add_socket(fd, 'r', accept))
 end

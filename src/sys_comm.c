@@ -29,7 +29,7 @@
  * Returns: [fd_udata]
  */
 static int
-sys_comm_init (lua_State *L)
+comm_init (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
@@ -69,7 +69,7 @@ sys_comm_init (lua_State *L)
 #endif
 	} else {
 	    const char *opt = lua_tostring(L, i);
-	    const char *endp = opt + lua_strlen(L, i) - 1;
+	    const char *endp = opt + lua_rawlen(L, i) - 1;
 
 	    if (!opt) continue;
 	    switch (*opt) {
@@ -176,7 +176,7 @@ sys_comm_init (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_control (lua_State *L)
+comm_control (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
@@ -242,7 +242,7 @@ sys_comm_control (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_timeout (lua_State *L)
+comm_timeout (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rtime = lua_tointeger(L, 2);
@@ -279,9 +279,11 @@ sys_comm_timeout (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_queues (lua_State *L)
+comm_queues (lua_State *L)
 {
-#ifdef _WIN32
+#ifndef _WIN32
+    if (1) {
+#else
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rqueue = lua_tointeger(L, 2);
     const int wqueue = lua_tointeger(L, 3);
@@ -290,8 +292,8 @@ sys_comm_queues (lua_State *L)
 #endif
 	lua_settop(L, 1);
 	return 1;
-#ifdef _WIN32
     }
+#ifdef _WIN32
     return sys_seterror(L, 0);
 #endif
 }
@@ -301,7 +303,7 @@ sys_comm_queues (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_purge (lua_State *L)
+comm_purge (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const char *mode = lua_tostring(L, 2);
@@ -329,7 +331,7 @@ sys_comm_purge (lua_State *L)
  * Returns: [boolean ...]
  */
 static int
-sys_comm_wait (lua_State *L)
+comm_wait (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
@@ -385,9 +387,9 @@ sys_comm_wait (lua_State *L)
 
 
 #define COMM_METHODS \
-    {"comm_init",	sys_comm_init}, \
-    {"comm_control",	sys_comm_control}, \
-    {"comm_timeout",	sys_comm_timeout}, \
-    {"comm_queues",	sys_comm_queues}, \
-    {"comm_purge",	sys_comm_purge}, \
-    {"comm_wait",	sys_comm_wait}
+    {"comm_init",	comm_init}, \
+    {"comm_control",	comm_control}, \
+    {"comm_timeout",	comm_timeout}, \
+    {"comm_queues",	comm_queues}, \
+    {"comm_purge",	comm_purge}, \
+    {"comm_wait",	comm_wait}

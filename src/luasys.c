@@ -19,7 +19,7 @@ int is_WinNT;
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 
-#define MAX_PATH	260
+#define SYS_FILE_PERMISSIONS	0644  /* default file permissions */
 
 #endif
 
@@ -41,20 +41,31 @@ static int
 sys_strerror (lua_State *L)
 {
     const int err = luaL_optint(L, -1, SYS_ERRNO);
-#ifndef _WIN32
-    const char *s = strerror(err);
-#else
-    char s[256];
 
-    if (FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, err,
-     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-     s, sizeof(s), NULL)) {
-	char *cp = strrchr(s, '\r');
-	if (cp) *cp = '\0';
-    } else
-	sprintf(s, "Unknown error %i", err);
+#ifndef _WIN32
+    lua_pushstring(L, strerror(err));
+#else
+    const int flags = FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM;
+    WCHAR buf[512];
+
+    if (is_WinNT
+     ? FormatMessageW(flags, NULL, err, 0, buf, sizeof(buf) / sizeof(buf[0]), NULL)
+     : FormatMessageA(flags, NULL, err, 0, (char *) buf, sizeof(buf), NULL)) {
+	char *s = filename_to_utf8(buf);
+	if (s) {
+	    char *cp;
+	    for (cp = s; *cp != '\0'; ++cp) {
+		if (*cp == '\r' || *cp == '\n')
+		    *cp = ' ';
+	    }
+
+	    lua_pushstring(L, s);
+	    free(s);
+	    return 1;
+	}
+    }
+    lua_pushfstring(L, "System error %i", err);
 #endif
-    lua_pushstring(L, s);
     return 1;
 }
 
@@ -90,7 +101,7 @@ sys_nprocs (lua_State *L)
 #if defined(_SC_NPROCESSORS_ONLN)
     n = sysconf(_SC_NPROCESSORS_ONLN);
     if (n == -1) n = 1;
-#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#elif defined(BSD)
     int mib[2];
     size_t len = sizeof(int);
 
@@ -109,27 +120,27 @@ sys_nprocs (lua_State *L)
 
 /*
  * Arguments: [number_of_files (number)]
- * Returns: [number_of_files (number)]
+ * Returns: number_of_files (number)
  */
 static int
 sys_limit_nfiles (lua_State *L)
 {
 #ifndef _WIN32
+    const int nargs = lua_gettop(L);
     struct rlimit rlim;
 
-    if (lua_gettop(L)) {
+    rlim.rlim_max = 0;
+    getrlimit(RLIMIT_NOFILE, &rlim);
+    lua_pushinteger(L, rlim.rlim_max);
+
+    if (nargs != 0) {
 	const int n = lua_tointeger(L, 1);
 
 	rlim.rlim_cur = rlim.rlim_max = n;
-	if (!setrlimit(RLIMIT_NOFILE, &rlim))
-	    return 1;
-    } else {
-	if (!getrlimit(RLIMIT_NOFILE, &rlim)) {
-	    lua_pushinteger(L, rlim.rlim_max);
-	    return 1;
-	}
+	if (setrlimit(RLIMIT_NOFILE, &rlim))
+	    return sys_seterror(L, 0);
     }
-    return sys_seterror(L, 0);
+    return 1;
 #else
     return 0;
 #endif
@@ -146,8 +157,10 @@ sys_toint (lua_State *L)
     int num = 0, sign = 1;
 
     if (s) {
-	if (*s == '+' || (*s == '-' && (sign = -1)))
-	    ++s;
+	switch (*s) {
+	case '-': sign = -1;
+	case '+': ++s;
+	}
 	while (*s >= '0' && *s <= '9')
 	    num = (num << 3) + (num << 1) + (*s++ & ~'0');
     }
@@ -170,6 +183,17 @@ sys_xpcall (lua_State *L)
 }
 
 
+#include "event/evq.c"
+#include "isa/fcgi/sys_fcgi.c"
+#include "mem/sys_mem.c"
+#include "thread/sys_thread.c"
+
+#ifndef _WIN32
+#include "sys_unix.c"
+#else
+#include "win32/sys_win32.c"
+#endif
+
 #include "sys_file.c"
 #include "sys_date.c"
 #include "sys_env.c"
@@ -179,12 +203,8 @@ sys_xpcall (lua_State *L)
 #include "sys_proc.c"
 #include "sys_rand.c"
 
-#ifndef _WIN32
-#include "sys_unix.c"
-#endif
 
-
-static luaL_reg syslib[] = {
+static luaL_reg sys_lib[] = {
     {"strerror",	sys_strerror},
     {"nprocs",		sys_nprocs},
     {"limit_nfiles",	sys_limit_nfiles},
@@ -193,12 +213,13 @@ static luaL_reg syslib[] = {
     DATE_METHODS,
     ENV_METHODS,
     EVQ_METHODS,
+    FCGI_METHODS,
     FD_METHODS,
     FS_METHODS,
     LOG_METHODS,
     PROC_METHODS,
     RAND_METHODS,
-#ifdef UNIX_METHODS
+#ifndef _WIN32
     UNIX_METHODS,
 #endif
     {NULL, NULL}
@@ -267,17 +288,19 @@ createmeta (lua_State *L)
 }
 
 
-LUALIB_API int luaopen_sys (lua_State *L);
-
 LUALIB_API int
 luaopen_sys (lua_State *L)
 {
-    luaL_register(L, "sys", syslib);
+    luaL_register(L, LUA_SYSLIBNAME, sys_lib);
     createmeta(L);
 
     luaopen_sys_mem(L);
     luaopen_sys_thread(L);
+
 #ifdef _WIN32
+#ifdef _WIN32_WCE
+    is_WinNT = 1;
+#else
     /* Is Win32 NT platform? */
     {
 	OSVERSIONINFO osvi;
@@ -286,6 +309,7 @@ luaopen_sys (lua_State *L)
 	is_WinNT = (GetVersionEx(&osvi)
 	 && osvi.dwPlatformId == VER_PLATFORM_WIN32_NT);
     }
+#endif
 
     luaopen_sys_win32(L);
 #else

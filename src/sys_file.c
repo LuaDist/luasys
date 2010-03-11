@@ -1,5 +1,7 @@
 /* Lua System: File I/O */
 
+#include <time.h>
+
 #ifdef _WIN32
 
 #include <stdio.h>	/* _fileno, P_tmpdir */
@@ -16,10 +18,12 @@
 #endif
 
 static const int fdopt_flags[] = {
-    O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_NOCTTY, O_FSYNC
+    O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_NOCTTY,
+    O_FSYNC, 0
 };
 static const char *const fdopt_names[] = {
-    "creat", "excl", "trunc", "append", "nonblock", "noctty", "sync",
+    "creat", "excl", "trunc", "append", "nonblock", "noctty",
+    "sync", "random",
     NULL
 };
 
@@ -39,7 +43,7 @@ sys_file (lua_State *L)
 }
 
 /*
- * Arguments: fd_udata, pathname (string), [mode (string: "r", "w", "rw"),
+ * Arguments: fd_udata, path (string), [mode (string: "r", "w", "rw"),
  *	permissions (number), options (string) ...]
  * Returns: [fd_udata]
  */
@@ -47,10 +51,10 @@ static int
 sys_open (lua_State *L)
 {
     fd_t fd, *fdp = checkudata(L, 1, FD_TYPENAME);
-    const char *pathname = luaL_checkstring(L, 2);
+    const char *path = luaL_checkstring(L, 2);
     const char *mode = lua_tostring(L, 3);
 #ifndef _WIN32
-    mode_t perm = (mode_t) lua_tointeger(L, 4);
+    mode_t perm = (mode_t) luaL_optinteger(L, 4, SYS_FILE_PERMISSIONS);
 #else
     int append = 0;
 #endif
@@ -71,7 +75,7 @@ sys_open (lua_State *L)
     }
 
     sys_vm_leave();
-    fd = open(pathname, flags, perm);
+    fd = open(path, flags, perm);
     sys_vm_enter();
 #else
     {
@@ -94,6 +98,9 @@ sys_open (lua_State *L)
 		case 'e':	/* excl */
 		    share = 0;
 		    break;
+		case 'r':	/* random */
+		    attr |= FILE_FLAG_RANDOM_ACCESS;
+		    break;
 		case 's':	/* sync */
 		    attr |= FILE_FLAG_WRITE_THROUGH;
 		    break;
@@ -104,16 +111,27 @@ sys_open (lua_State *L)
 		}
 	}
 
-	sys_vm_leave();
-	fd = CreateFile(pathname, flags, share, NULL, creation, attr, NULL);
-	sys_vm_enter();
+	{
+	    void *os_path = utf8_to_filename(path);
+	    if (!os_path)
+		return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	    sys_vm_leave();
+	    fd = is_WinNT
+	     ? CreateFileW(os_path, flags, share, NULL, creation, attr, NULL)
+	     : CreateFileA(os_path, flags, share, NULL, creation, attr, NULL);
+	    sys_vm_enter();
+
+	    free(os_path);
+	}
     }
 #endif
     if (fd != (fd_t) -1) {
 	*fdp = fd;
 #ifdef _WIN32
 	if (append) {
-	    SetFilePointer(fd, 0, NULL, SEEK_END);
+	    LONG off_hi = 0L;
+	    SetFilePointer(fd, 0L, &off_hi, SEEK_END);
 	}
 #endif
 	lua_settop(L, 1);
@@ -123,27 +141,43 @@ sys_open (lua_State *L)
 }
 
 /*
- * Arguments: fd_udata, pathname (string), [permissions (number)]
+ * Arguments: fd_udata, path (string), [permissions (number)]
  * Returns: [fd_udata]
  */
 static int
 sys_create (lua_State *L)
 {
     fd_t fd, *fdp = checkudata(L, 1, FD_TYPENAME);
-    const char *pathname = luaL_checkstring(L, 2);
+    const char *path = luaL_checkstring(L, 2);
 #ifndef _WIN32
-    mode_t perm = (mode_t) lua_tointeger(L, 3);
+    mode_t perm = (mode_t) luaL_optinteger(L, 3, SYS_FILE_PERMISSIONS);
 #endif
 
-    sys_vm_leave();
 #ifndef _WIN32
-    fd = creat(pathname, perm);
-#else
-    fd = CreateFile(pathname, O_WRONLY, FILE_SHARE_READ | FILE_SHARE_WRITE,
-     NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
-     | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
-#endif
+    sys_vm_leave();
+    fd = creat(path, perm);
     sys_vm_enter();
+#else
+    {
+	const int flags = GENERIC_WRITE;
+	const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+	const DWORD creation = CREATE_ALWAYS;
+	const DWORD attr = FILE_ATTRIBUTE_NORMAL
+	 | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	sys_vm_leave();
+	fd = is_WinNT
+	 ? CreateFileW(os_path, flags, share, NULL, creation, attr, NULL)
+	 : CreateFileA(os_path, flags, share, NULL, creation, attr, NULL);
+	sys_vm_enter();
+
+	free(os_path);
+    }
+#endif
 
     if (fd != (fd_t) -1) {
 	*fdp = fd;
@@ -154,7 +188,7 @@ sys_create (lua_State *L)
 }
 
 /*
- * Arguments: fd_udata, [prefix (string), auto-remove (boolean)]
+ * Arguments: fd_udata, [prefix (string), persistent (boolean)]
  * Returns: [filename]
  */
 static int
@@ -162,19 +196,21 @@ sys_tempfile (lua_State *L)
 {
     fd_t fd, *fdp = checkudata(L, 1, FD_TYPENAME);
     const char *prefix = lua_tostring(L, 2);
-    int auto_remove = lua_isboolean(L, -1) && lua_toboolean(L, -1);
-    char path[MAX_PATH + 1];
+    const int persist = lua_isboolean(L, -1) && lua_toboolean(L, -1);
 
 #ifndef _WIN32
     static const char template[] = "XXXXXX";
+    char path[MAX_PATHNAME];
     const char *tmpdir;
-    size_t len, pfxlen = lua_strlen(L, 2);
+    size_t len, pfxlen = lua_rawlen(L, 2);
 
+    /* get temporary directory */
     if (!(tmpdir = getenv("TMPDIR"))
      && !(tmpdir = getenv("TMP"))
      && !(tmpdir = getenv("TEMP")))
 	tmpdir = P_tmpdir;
     len = strlen(tmpdir);
+
     if (len + 1 + pfxlen + sizeof(template) > sizeof(path))
 	return 0;
     memcpy(path, tmpdir, len);
@@ -189,26 +225,62 @@ sys_tempfile (lua_State *L)
     sys_vm_leave();
     fd = mkstemp(path);
     sys_vm_enter();
+
+    lua_pushstring(L, path);
 #else
-    char tmpdir[MAX_PATH + 1];
+    WCHAR os_path[MAX_PATHNAME];
 
-    if (!GetTempPath(MAX_PATH, tmpdir)
-     || !GetTempFileName(tmpdir, prefix, 0, path))
-	goto err;
+    /* get temporary directory */
+    {
+	int res;
+	void *os_prefix = utf8_to_filename(prefix);
+	if (!os_prefix)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
 
-    sys_vm_leave();
-    fd = CreateFile(path, GENERIC_READ | GENERIC_WRITE,
-     0, NULL, CREATE_ALWAYS, FILE_FLAG_RANDOM_ACCESS
-     | FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_HIDDEN
-     | (auto_remove ? FILE_FLAG_DELETE_ON_CLOSE : 0), NULL);
-    sys_vm_enter();
+	if (is_WinNT) {
+	    res = GetTempPathW(MAX_PATHNAME - 24, os_path)
+	     && GetTempFileNameW(os_path, os_prefix, 0, os_path);
+	}
+	else {
+	    char *p = (char *) os_path;
+
+	    res = GetTempPathA(MAX_PATHNAME - 24, p)
+	     && GetTempFileNameA(p, (char *) os_prefix, 0, p);
+	}
+
+	free(os_prefix);
+	if (!res) goto err;
+    }
+
+    {
+	char *path = filename_to_utf8(os_path);
+	if (!path)
+	    return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+	lua_pushstring(L, path);
+	free(path);
+    }
+
+    {
+	const int flags = GENERIC_READ | GENERIC_WRITE;
+	const DWORD creation = CREATE_ALWAYS;
+	const DWORD attr = FILE_FLAG_RANDOM_ACCESS
+	 | FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_HIDDEN
+	 | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION
+	 | (persist ? 0 : FILE_FLAG_DELETE_ON_CLOSE);
+
+	sys_vm_leave();
+	fd = is_WinNT
+	 ? CreateFileW(os_path, flags, 0, NULL, creation, attr, NULL)
+	 : CreateFileA((char *) os_path, flags, 0, NULL, creation, attr, NULL);
+	sys_vm_enter();
+    }
 #endif
     if (fd != (fd_t) -1) {
 	*fdp = fd;
 #ifndef _WIN32
-	if (auto_remove) unlink(path);
+	if (!persist) unlink(path);
 #endif
-	lua_pushstring(L, path);
 	return 1;
     }
 #ifdef _WIN32
@@ -281,6 +353,50 @@ sys_dispose (lua_State *L)
     fd_t *fdp = checkudata(L, 1, FD_TYPENAME);
     *fdp = (fd_t) -1;
     return 0;
+}
+
+/*
+ * Arguments: fd_udata, file_udata, [mode (string)]
+ * Returns: [fd_udata]
+ */
+static int
+sys_fdopen (lua_State *L)
+{
+    fd_t *fdp = checkudata(L, 1, FD_TYPENAME);
+    FILE **fp = checkudata(L, 2, LUA_FILEHANDLE);
+    const char *mode = luaL_optstring(L, 3, "r");
+
+#ifndef _WIN32
+    *fp = fdopen((int) *fdp, mode);
+#else
+    *fp = _fdopen(_open_osfhandle((long) *fdp, 0), mode);
+#endif
+    if (*fp) {
+	*fdp = (fd_t) -1;
+	lua_settop(L, 1);
+	return 1;
+    }
+    return sys_seterror(L, 0);
+}
+
+/*
+ * Arguments: fd_udata, file_udata
+ * Returns: [fd_udata]
+ */
+static int
+sys_fileno (lua_State *L)
+{
+    fd_t *fdp = checkudata(L, 1, FD_TYPENAME);
+    FILE **fp = checkudata(L, 2, LUA_FILEHANDLE);
+
+#ifndef _WIN32
+    *fdp = fileno(*fp);
+#else
+    *fdp = (fd_t) _get_osfhandle(_fileno(*fp));
+#endif
+    *fp = NULL;
+    lua_settop(L, 1);
+    return 1;
 }
 
 /*
@@ -440,50 +556,6 @@ sys_lock (lua_State *L)
 }
 
 /*
- * Arguments: fd_udata, [mode (string)]
- * Returns: [file_udata]
- */
-static int
-sys_to_file (lua_State *L)
-{
-    fd_t *fdp = checkudata(L, 1, FD_TYPENAME);
-    const char *mode = luaL_optstring(L, 2, "r");
-    FILE *f;
-
-#ifndef _WIN32
-    f = fdopen((int) *fdp, mode);
-#else
-    f = _fdopen(_open_osfhandle((long) *fdp, 0), mode);
-#endif
-    if (f) {
-	lua_boxpointer(L, f);
-	luaL_getmetatable(L, LUA_FILEHANDLE);
-	lua_setmetatable(L, -2);
-	return 1;
-    }
-    return sys_seterror(L, 0);
-}
-
-/*
- * Arguments: fd_udata, file_udata
- * Returns: [fd_udata]
- */
-static int
-sys_from_file (lua_State *L)
-{
-    fd_t *fdp = checkudata(L, 1, FD_TYPENAME);
-    FILE **fp = checkudata(L, 2, LUA_FILEHANDLE);
-
-#ifndef _WIN32
-    *fdp = fileno(*fp);
-#else
-    *fdp = (fd_t) _get_osfhandle(_fileno(*fp));
-#endif
-    *fp = NULL;
-    return 1;
-}
-
-/*
  * Arguments: fd_udata, {string | membuf_udata} ...
  * Returns: [success/partial (boolean), count (number)]
  */
@@ -512,7 +584,7 @@ sys_write (lua_State *L)
 #endif
 	sys_vm_enter();
 	if (nw == -1) {
-	    if (n > 0 || SYS_ERRNO == EAGAIN) break;
+	    if (n > 0 || SYS_EAGAIN(SYS_ERRNO)) break;
 	    return sys_seterror(L, 0);
 	}
 	n += nw;
@@ -559,7 +631,7 @@ sys_read (lua_State *L)
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
      && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
-	if (!nr || SYS_ERRNO != EAGAIN) goto err;
+	if (!nr || SYS_EAGAIN(SYS_ERRNO)) goto err;
 	lua_pushboolean(L, 0);
     } else {
 	if (!sys_buffer_write_done(L, &sb, buf, nr))
@@ -571,18 +643,37 @@ sys_read (lua_State *L)
 }
 
 /*
- * Arguments: fd_udata
+ * Arguments: fd_udata, [data_only (boolean)]
  * Returns: [fd_udata]
  */
 static int
 sys_flush (lua_State *L)
 {
     fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+#if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO > 0
+    const int data_only = lua_toboolean(L, 2);
+#endif
     int res;
 
     sys_vm_leave();
 #ifndef _WIN32
-    res = fsync(fd);
+    res = -1;
+
+#if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO > 0
+    if (data_only) {
+	do res = fdatasync(fd);
+	while (res == -1 && SYS_ERRNO == EINTR);
+    }
+#endif
+
+#ifdef F_FULLFSYNC
+    if (res) res = fcntl(fd, F_FULLFSYNC, 0);
+#endif
+
+    if (res) {
+	do res = fsync(fd);
+	while (res == -1 && SYS_ERRNO == EINTR);
+    }
 #else
     res = !FlushFileBuffers(fd);
 #endif
@@ -606,18 +697,66 @@ sys_nonblocking (lua_State *L)
     const int nonblocking = lua_toboolean(L, 2);
 
 #ifndef _WIN32
-    int flags = fcntl(fd, F_GETFL);
+    const int flags = fcntl(fd, F_GETFL);
 
     if (!fcntl(fd, F_SETFL, nonblocking ? flags | O_NONBLOCK
      : flags ^ O_NONBLOCK)) {
 #else
-    size_t mode = nonblocking ? 0 : MAILSLOT_WAIT_FOREVER;
+    const size_t mode = nonblocking ? 0 : MAILSLOT_WAIT_FOREVER;
 
     if (SetMailslotInfo(fd, mode)) {
 #endif
 	lua_settop(L, 1);
 	return 1;
     }
+    return sys_seterror(L, 0);
+}
+
+/*
+ * Arguments: fd_udata, [modify_time (number)]
+ * Returns: [fd_udata]
+ */
+static int
+sys_utime (lua_State *L)
+{
+    fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
+    const long modtime = luaL_optinteger(L, 2, -1L);
+
+#ifndef _WIN32
+    struct timeval tv[2], *tvp;
+
+    if (modtime == -1L)
+	tvp = NULL;
+    else {
+	memset(tv, 0, sizeof(tv));
+	tv[0].tv_sec = tv[1].tv_sec = modtime;
+	tvp = tv;
+    }
+    if (!futimes(fd, tvp)) {
+#else
+    FILETIME ft;
+
+    if (modtime == -1L)
+	GetSystemTimeAsFileTime(&ft);
+    else {
+	FILETIME lft;
+	int64_t t64 = modtime;
+
+	t64 = (t64 + 11644473600) * 10000000;
+	lft.dwLowDateTime = INT64_LOW(t64);
+	lft.dwHighDateTime = INT64_HIGH(t64);
+
+	if (!LocalFileTimeToFileTime(&lft, &ft))
+	    goto err;
+    }
+    if (SetFileTime(fd, NULL, NULL, &ft)) {
+#endif
+	lua_settop(L, 1);
+	return 1;
+    }
+#ifdef _WIN32
+ err:
+#endif
     return sys_seterror(L, 0);
 }
 
@@ -651,19 +790,23 @@ static luaL_reg fd_meth[] = {
     {"pipe",		sys_pipe},
     {"close",		sys_close},
     {"dispose",		sys_dispose},
+    {"fdopen",		sys_fdopen},
+    {"fileno",		sys_fileno},
     {"set_std",		sys_set_std},
     {"seek",		sys_seek},
     {"set_end",		sys_set_end},
     {"lock",		sys_lock},
-    {"to_file",		sys_to_file},
-    {"from_file",	sys_from_file},
     {"write",		sys_write},
     {"read",		sys_read},
     {"flush",		sys_flush},
     {"nonblocking",	sys_nonblocking},
+    {"utime",		sys_utime},
     {"__tostring",	sys_tostring},
     {"__gc",		sys_close},
     COMM_METHODS,
+#ifdef _WIN32
+    WIN32_METHODS,
+#endif
     {SYS_BUFIO_TAG,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };

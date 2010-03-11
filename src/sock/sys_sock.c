@@ -18,8 +18,6 @@ typedef int		socklen_t;
 #define EINPROGRESS	WSAEINPROGRESS
 #define EALREADY	WSAEALREADY
 
-#define SOCK_ERRNO	WSAGetLastError()
-
 #else
 
 #include <sys/socket.h>
@@ -29,8 +27,6 @@ typedef int		socklen_t;
 #include <netinet/tcp.h>	/* TCP_NODELAY */
 #include <netdb.h>
 
-#define SOCK_ERRNO	h_errno
-
 #if defined(__linux__)
 #include <sys/sendfile.h>
 #else
@@ -38,9 +34,9 @@ typedef int		socklen_t;
 #endif
 
 #ifdef __sun
-    #include <sys/filio.h>	/* FIONBIO */
+#include <sys/filio.h>		/* FIONBIO */
 #else
-    #include <sys/ioctl.h>	/* FIONBIO */
+#include <sys/ioctl.h>		/* FIONBIO */
 #endif
 
 #define ioctlsocket	ioctl
@@ -50,57 +46,7 @@ typedef int		socklen_t;
 
 #define SD_TYPENAME	"sys.sock.handle"
 
-struct sock_addr {
-    socklen_t addrlen;
-#define	SA_PREFIX	sizeof(size_t)
-    struct sockaddr addr;
-};
-
-
-/*
- * Arguments: ..., [number]
- * Returns: string
- */
-static int
-sock_strerror (lua_State *L)
-{
-    const int err = luaL_optint(L, -1, SOCK_ERRNO);
-#ifndef _WIN32
-    const char *s = hstrerror(err);
-#else
-    static HANDLE hDLL = NULL;
-    char s[256];
-
-    if (hDLL == NULL)
-	hDLL = LoadLibraryEx("netmsg.dll", NULL,
-	 DONT_RESOLVE_DLL_REFERENCES | LOAD_LIBRARY_AS_DATAFILE);
-
-    if (hDLL != NULL
-     && FormatMessage(FORMAT_MESSAGE_IGNORE_INSERTS
-     | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_FROM_HMODULE,
-     hDLL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-     s, sizeof(s), NULL)) {
-	char *cp = strrchr(s, '\r');
-	if (cp) *cp = '\0';
-    } else
-	sprintf(s, "Unknown error %i", err);
-#endif
-    lua_pushstring(L, s);
-    return 1;
-}
-
-/*
- * Returns: nil, string
- */
-static int
-sock_seterror (lua_State *L)
-{
-    lua_pushnil(L);
-    sock_strerror(L);
-    lua_pushvalue(L, -1);
-    lua_setglobal(L, SYS_ERROR_MESSAGE);
-    return 2;
-}
+#include "sock_addr.c"
 
 
 /*
@@ -125,15 +71,15 @@ sock_pair (int type, sd_t sv[2])
     sd_t sd;
     int res = -1, len = sizeof(struct sockaddr_in);
 
-    sa.sin_family = PF_INET;
+    sa.sin_family = AF_INET;
     sa.sin_port = 0;
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    if ((sd = WSASocket(PF_INET, type, 0, NULL, 0, IS_OVERLAPPED)) != -1) {
+    if ((sd = WSASocket(AF_INET, type, 0, NULL, 0, IS_OVERLAPPED)) != -1) {
 	if (!bind(sd, (struct sockaddr *) &sa, len)
 	 && !listen(sd, 1)
 	 && !getsockname(sd, (struct sockaddr *) &sa, &len)
-	 && (sv[0] = WSASocket(PF_INET, type, 0, NULL, 0, IS_OVERLAPPED)) != -1) {
+	 && (sv[0] = WSASocket(AF_INET, type, 0, NULL, 0, IS_OVERLAPPED)) != -1) {
 	    struct sockaddr_in sa2;
 	    int len2;
 
@@ -160,7 +106,7 @@ sock_pair (int type, sd_t sv[2])
 
 
 /*
- * Arguments: sd_udata, [type ("stream", "dgram"), domain ("inet", "unix"),
+ * Arguments: sd_udata, [type ("stream", "dgram"), domain ("inet", "inet6", "unix"),
  *	sd_udata (socketpair)]
  * Returns: [sd_udata]
  */
@@ -170,18 +116,23 @@ sock_socket (lua_State *L)
     sd_t *sdp = checkudata(L, 1, SD_TYPENAME);
     const char *typep = lua_tostring(L, 2);
     const char *domainp = lua_tostring(L, 3);
-    int type = SOCK_STREAM, domain = PF_INET;
+    int type = SOCK_STREAM, domain = AF_INET;
     sd_t sd, sv[2];
     sd_t *pair_sdp = (lua_gettop(L) > 1 && lua_isuserdata(L, -1))
      ? checkudata(L, -1, SD_TYPENAME) : NULL;
 
     if (typep && typep[0] == 'd')
 	type = SOCK_DGRAM;
-    if (domainp && domainp[0] == 'u')
-	domain = PF_UNIX;
+    if (domainp) {
+	if (domainp[0] == 'u')
+	    domain = AF_UNIX;
+	else if (domainp[0] == 'i' && domainp[1] == 'n' && domainp[2] == 'e'
+	 && domainp[3] == 't' && domainp[4] == '6')
+	    domain = AF_INET6;
+    }
 
 #ifndef _WIN32
-    sd = (pair_sdp) ? socketpair(PF_UNIX, type, 0, sv)
+    sd = (pair_sdp) ? socketpair(AF_UNIX, type, 0, sv)
      : socket(domain, type, 0);
 #else
     sd = (pair_sdp) ? sock_pair(type, sv)
@@ -314,28 +265,55 @@ sock_sockopt (lua_State *L)
 }
 
 /*
- * Arguments: sd_udata, in_addr_udata (multiaddr),
- *	[in_addr_udata (interface), add/drop (boolean)]
+ * Arguments: sd_udata, binary_address (multiaddr),
+ *	[binary_address_ipv4 (interface) | interface_ipv6 (number),
+ *	add/drop (boolean)]
  * Returns: [sd_udata]
  */
 static int
 sock_membership (lua_State *L)
 {
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    const struct in_addr *multiaddrp = lua_touserdata(L, 2);
-    const struct in_addr *interfacep = lua_touserdata(L, 3);
+    int len, af;
+    const char *maddrp = sock_checkladdr(L, 2, &len, &af);
     const int optflag = !lua_isboolean(L, -1) || lua_toboolean(L, -1)
      ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
-    struct ip_mreq ipmr;
+    union {
+	struct ip_mreq ip;
+#ifdef IPPROTO_IPV6
+	struct ipv6_mreq ip6;
+#endif
+    } mr;
+    int level, mr_len;
 
-    if (!multiaddrp) luaL_typerror(L, 2, "socket address");
+    memset(&mr, 0, sizeof(mr));
+    if (af == AF_INET) {
+	const char *ifacep = (lua_type(L, 3) == LUA_TSTRING)
+	 ? sock_checkladdr(L, 3, &len, &af) : NULL;
 
-    ipmr.imr_multiaddr.s_addr = multiaddrp->s_addr;
-    ipmr.imr_interface.s_addr = interfacep
-     ? interfacep->s_addr : htonl(INADDR_ANY);
+	if (ifacep && af != AF_INET)
+	    luaL_argerror(L, 3, "invalid interface");
 
-    if (!setsockopt(sd, IPPROTO_IP, optflag,
-     (char *) &ipmr, sizeof(struct ip_mreq))) {
+	memcpy(&mr.ip.imr_multiaddr, maddrp, len);
+	if (ifacep)
+	    memcpy(&mr.ip.imr_interface, ifacep, len);
+
+	level = IPPROTO_IP;
+	mr_len = sizeof(struct ip_mreq);
+    }
+    else {
+#ifdef IPPROTO_IPV6
+	memcpy(&mr.ip6.ipv6mr_multiaddr, maddrp, len);
+	mr.ip6.ipv6mr_interface = lua_tointeger(L, 3);
+
+	level = IPPROTO_IPV6;
+	mr_len = sizeof(struct ipv6_mreq);
+#else
+	luaL_argerror(L, 2, "invalid family");
+#endif
+    }
+
+    if (!setsockopt(sd, level, optflag, (char *) &mr, mr_len)) {
 	lua_settop(L, 1);
 	return 1;
     }
@@ -350,11 +328,9 @@ static int
 sock_bind (lua_State *L)
 {
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    struct sock_addr *sap = lua_touserdata(L, 2);
+    struct sock_addr *sap = checkudata(L, 2, SA_TYPENAME);
 
-    if (!sap) luaL_typerror(L, 2, "socket address");
-
-    if (!bind(sd, &sap->addr, sap->addrlen)) {
+    if (!bind(sd, &sap->u.addr, sap->addrlen)) {
 	lua_settop(L, 1);
 	return 1;
     }
@@ -387,26 +363,27 @@ sock_accept (lua_State *L)
 {
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
     sd_t *sdp = checkudata(L, 2, SD_TYPENAME);
-    struct sock_addr *from = lua_touserdata(L, 3);
+    struct sock_addr *from = lua_isnoneornil(L, 3) ? NULL
+     : checkudata(L, 3, SA_TYPENAME);
     struct sockaddr *sap = NULL;
-    socklen_t *lenp = NULL;
+    socklen_t *slp = NULL;
 
     if (from) {
-	sap = &from->addr;
-	lenp = &from->addrlen;
+	sap = &from->u.addr;
+	slp = &from->addrlen;
     }
 #ifndef _WIN32
-    do sd = accept(sd, sap, lenp);
+    do sd = accept(sd, sap, slp);
     while (sd == -1 && SYS_ERRNO == EINTR);
 #else
-    sd = accept(sd, sap, lenp);
+    sd = accept(sd, sap, slp);
 #endif
     if (sd != (sd_t) -1) {
 	*sdp = sd;
 	lua_settop(L, 2);
 	return 1;
     }
-    else if (SYS_ERRNO == EAGAIN) {
+    else if (SYS_EAGAIN(SYS_ERRNO)) {
 	lua_pushboolean(L, 0);
 	return 1;
     }
@@ -421,41 +398,21 @@ static int
 sock_connect (lua_State *L)
 {
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    struct sock_addr *sap = lua_touserdata(L, 2);
+    struct sock_addr *sap = checkudata(L, 2, SA_TYPENAME);
     int res;
 
-    if (!sap) luaL_typerror(L, 2, "socket address");
-
     sys_vm_leave();
-    do res = connect(sd, &sap->addr, sap->addrlen);
+    do res = connect(sd, &sap->u.addr, sap->addrlen);
     while (res == -1 && SYS_ERRNO == EINTR);
     sys_vm_enter();
 
-    if (!res || SYS_ERRNO == EAGAIN || SYS_ERRNO == EINPROGRESS
+    if (!res || SYS_ERRNO == EINPROGRESS || SYS_ERRNO == EALREADY
 #if defined(__FreeBSD__)
      || SYS_ERRNO == EADDRINUSE
 #endif
-     || SYS_ERRNO == EALREADY) {
+     || SYS_EAGAIN(SYS_ERRNO)) {
 	if (res) lua_pushboolean(L, 0);
 	else lua_settop(L, 1);
-	return 1;
-    }
-    return sys_seterror(L, 0);
-}
-
-/*
- * Arguments: sd_udata, [sock_addr_udata]
- * Returns: [sock_addr_udata]
- */
-static int
-sock_getpeername (lua_State *L)
-{
-    sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    struct sock_addr *sap = lua_touserdata(L, 2);
-
-    if (!sap) sap = lua_newuserdata(L, sizeof(struct sock_addr));
-    sap->addrlen = sizeof(struct sockaddr);
-    if (!getpeername(sd, &sap->addr, &sap->addrlen)) {
 	return 1;
     }
     return sys_seterror(L, 0);
@@ -476,7 +433,8 @@ sock_send (lua_State *L)
 	"oob", "dontroute", NULL
     };
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    const struct sock_addr *to = lua_touserdata(L, 3);
+    const struct sock_addr *to = !lua_isuserdata(L, 3) ? NULL
+     : checkudata(L, 3, SA_TYPENAME);
     struct sys_buffer sb;
     int nw;  /* number of chars actually send */
     unsigned int i, flags = 0;
@@ -488,11 +446,11 @@ sock_send (lua_State *L)
     }
     sys_vm_leave();
     do nw = !to ? send(sd, sb.ptr.r, sb.size, flags)
-     : sendto(sd, sb.ptr.r, sb.size, flags, &to->addr, to->addrlen);
+     : sendto(sd, sb.ptr.r, sb.size, flags, &to->u.addr, to->addrlen);
     while (nw == -1 && SYS_ERRNO == EINTR);
     sys_vm_enter();
     if (nw == -1) {
-	if (SYS_ERRNO != EAGAIN)
+	if (!SYS_EAGAIN(SYS_ERRNO))
 	    return sys_seterror(L, 0);
 	nw = 0;
     } else {
@@ -525,18 +483,18 @@ sock_recv (lua_State *L)
 	NULL
     };
     sd_t sd = (sd_t) lua_unboxinteger(L, 1, SD_TYPENAME);
-    struct sock_addr *from = lua_touserdata(L, 3);
-    struct sockaddr *sap = NULL;
-    socklen_t *lenp = NULL;
-    unsigned int i, flags = 0;
-
     size_t n = !lua_isnumber(L, 2) ? ~((size_t) 0)
      : (size_t) lua_tointeger(L, 2);
+    struct sock_addr *from = !lua_isuserdata(L, 3) ? NULL
+     : checkudata(L, 3, SA_TYPENAME);
+    struct sockaddr *sap = NULL;
+    socklen_t *slp = NULL;
     const size_t len = n;  /* how much total to read */
     size_t rlen;  /* how much to read */
     int nr;  /* number of bytes actually read */
     struct sys_buffer sb;
     char buf[SYS_BUFSIZE];
+    unsigned int i, flags = 0;
 
     sys_buffer_write_init(L, 2, &sb, buf, sizeof(buf));
 
@@ -544,17 +502,17 @@ sock_recv (lua_State *L)
 	flags |= o_flags[luaL_checkoption(L, i, NULL, o_names)];
     }
     if (from) {
-	sap = &from->addr;
-	lenp = &from->addrlen;
+	sap = &from->u.addr;
+	slp = &from->addrlen;
     }
     do {
 	rlen = (n <= sb.size) ? n : sb.size;
 	sys_vm_leave();
 #ifndef _WIN32
-	do nr = recvfrom(sd, sb.ptr.w, rlen, flags, sap, lenp);
+	do nr = recvfrom(sd, sb.ptr.w, rlen, flags, sap, slp);
 	while (nr == -1 && SYS_ERRNO == EINTR);
 #else
-	nr = recvfrom(sd, sb.ptr.w, rlen, flags, sap, lenp);
+	nr = recvfrom(sd, sb.ptr.w, rlen, flags, sap, slp);
 #endif
 	sys_vm_enter();
 	if (nr == -1) break;
@@ -562,7 +520,7 @@ sock_recv (lua_State *L)
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
      && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
-	if (!nr || SYS_ERRNO != EAGAIN) goto err;
+	if (!nr || !SYS_EAGAIN(SYS_ERRNO)) goto err;
 	lua_pushboolean(L, 0);
     } else {
 	if (!sys_buffer_write_done(L, &sb, buf, nr))
@@ -590,7 +548,7 @@ TransmitFileMap (SOCKET sd, HANDLE fd, DWORD n)
 
 	size_lo = GetFileSize(fd, &size_hi);
 	if (size_lo != -1L || SYS_ERRNO == NO_ERROR) {
-	    LONG off_hi = 0, off_lo;
+	    LONG off_hi = 0L, off_lo;
 	    int64_t size;
 	    DWORD len;
 
@@ -610,7 +568,8 @@ TransmitFileMap (SOCKET sd, HANDLE fd, DWORD n)
 	    WSABUF buf = {n, base + size_lo};
 
 	    if (!WSASend(sd, &buf, 1, &res, 0, NULL, NULL)) {
-		SetFilePointer(fd, res, NULL, SEEK_CUR);
+		LONG off_hi = 0L;
+		SetFilePointer(fd, res, &off_hi, SEEK_CUR);
 	    }
 	    UnmapViewOfFile(base);
 	}
@@ -657,7 +616,7 @@ sock_sendfile (lua_State *L)
 #endif
     sys_vm_enter();
 
-    if (res != -1 || SYS_ERRNO == EAGAIN) {
+    if (res != -1 || SYS_EAGAIN(SYS_ERRNO)) {
 	if (res == -1) {
 	    lua_pushboolean(L, 0);
 	    return 1;
@@ -704,7 +663,7 @@ sock_write (lua_State *L)
 #endif
 	sys_vm_enter();
 	if (nw == -1) {
-	    if (n > 0 || SYS_ERRNO == EAGAIN) break;
+	    if (n > 0 || SYS_EAGAIN(SYS_ERRNO)) break;
 	    return sys_seterror(L, 0);
 	}
 	n += nw;
@@ -752,7 +711,7 @@ sock_read (lua_State *L)
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
      && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
-	if (!nr || SYS_ERRNO != EAGAIN) goto err;
+	if (!nr || !SYS_EAGAIN(SYS_ERRNO)) goto err;
 	lua_pushboolean(L, 0);
     } else {
 	if (!sys_buffer_write_done(L, &sb, buf, nr))
@@ -780,217 +739,7 @@ sock_tostring (lua_State *L)
 }
 
 
-/*
- * Arguments: sock_addr_udata
- * Returns: port, in_addr_udata
- * |
- * Arguments: [port, in_addr_udata]
- * Returns: sock_addr_udata
- */
-static int
-sock_addr_in (lua_State *L)
-{
-    struct sock_addr *sap = lua_touserdata(L, 1);
-    struct sockaddr_in *sinp;
-    struct in_addr *inp;
-
-    if (sap) {
-	sinp = (struct sockaddr_in *) &sap->addr;
-	lua_pushinteger(L, ntohs(sinp->sin_port));
-	inp = lua_newuserdata(L, sizeof(struct in_addr));
-	*inp = sinp->sin_addr;
-	return 2;
-    } else {
-	unsigned short port = (unsigned short) lua_tointeger(L, 1);
-
-	inp = lua_touserdata(L, 2);
-
-	sap = lua_newuserdata(L, SA_PREFIX + sizeof(struct sockaddr_in));
-	sap->addrlen = sizeof(struct sockaddr_in);
-	sinp = (struct sockaddr_in *) &sap->addr;
-	memset(sinp, 0, sizeof(struct sockaddr_in));
-	/* host is either a valid ip address or not exist */
-	sinp->sin_addr.s_addr = htonl(INADDR_ANY);
-	sinp->sin_port = htons(port);
-	sinp->sin_family = PF_INET;
-	if (inp) sinp->sin_addr = *inp;
-	return 1;
-    };
-}
-
-#ifndef _WIN32
-
-/*
- * Arguments: sock_addr_udata
- * Returns: path (string)
- * |
- * Arguments: path (string)
- * Returns: sock_addr_udata
- */
-static int
-sock_addr_un (lua_State *L)
-{
-    struct sock_addr *sap;
-    struct sockaddr_un *sunp;
-
-    if ((sap = lua_touserdata(L, 1))) {
-	sunp = (struct sockaddr_un *) &sap->addr;
-	lua_pushstring(L, sunp->sun_path);
-	return 1;
-    } else {
-	const char *path = luaL_checkstring(L, 1);
-	size_t len = strlen(path);
-
-	if (len > sizeof(sunp->sun_path) - 1) return 0;
-
-	sap = lua_newuserdata(L, SA_PREFIX + sizeof(struct sockaddr_un));
-	sunp = (struct sockaddr_un *) &sap->addr;
-	sap->addrlen = len + sizeof(sunp->sun_family);
-	sunp->sun_family = PF_UNIX;
-	memcpy(sunp->sun_path, path, ++len);
-	return 1;
-    };
-}
-
-#endif
-
-
-/*
- * Arguments: host (string)
- * Returns: number
- */
-static int
-sock_inet_addr (lua_State *L)
-{
-    const char *host = luaL_checkstring(L, 1);
-
-    lua_pushnumber(L, inet_addr(host));
-    return 1;
-}
-
-#ifdef _WIN32
-
-#define atod(cp, num)							\
-    while (isdigit(*(cp)))						\
-	(num) = ((num) << 3) + ((num) << 1) + (*((cp)++) & ~'0');
-
-static int
-inet_aton (const char *cp, struct in_addr *inp)
-{
-    unsigned long int addr = 0;
-    int n = 0;
-
-    atod(cp, n);
-    if (n > 255 || *cp++ != '.') return 0;
-    addr = n;
-    n = 0;
-    atod(cp, n);
-    if (n > 255 || *cp++ != '.') return 0;
-    addr = (addr << 8) | n;
-    n = 0;
-    atod(cp, n);
-    if (n > 255 || *cp++ != '.') return 0;
-    addr = (addr << 8) | n;
-    n = 0;
-    atod(cp, n);
-    if (n > 255) return 0;
-    inp->s_addr = htonl((addr << 8) | n);
-    return 1;
-}
-
-#endif
-
-/*
- * Arguments: host (string: address, "*", "any", "loopback", "broadcast"),
- *	[in_addr_udata]
- * Returns: in_addr_udata
- */
-static int
-sock_inet_aton (lua_State *L)
-{
-    const char *host = luaL_checkstring(L, 1);
-    struct in_addr *inp = lua_touserdata(L, 2);
-
-    if (inp) lua_settop(L, 2);
-    else inp = lua_newuserdata(L, sizeof(struct in_addr));
-
-    switch (*host) {
-    case 'a':  /* any */
-    case '*':
-	inp->s_addr = htonl(INADDR_ANY);
-	break;
-    case 'l':  /* loopback */
-	inp->s_addr = htonl(INADDR_LOOPBACK);
-	break;
-    case 'b':  /* broadcast */
-	inp->s_addr = htonl(INADDR_BROADCAST);
-	break;
-    default:
-	if (!inet_aton(host, inp)) return 0;
-    }
-    return 1;
-}
-
-/*
- * Arguments: in_addr_udata
- * Returns: [host (string)]
- */
-static int
-sock_inet_ntoa (lua_State *L)
-{
-    struct in_addr *inp = lua_touserdata(L, 1);
-    char *host;
-
-    if (!inp) luaL_typerror(L, 1, "socket address");
-
-    host = inet_ntoa(*inp);
-    if (host) {
-	lua_pushstring(L, host);
-	return 1;
-    }
-    return 0;
-}
-
-/*
- * Arguments: address (string), [in_addr_udata, get_aliases (boolean)]
- * Returns: [in_addr_udata, host_name (string), aliases (table)]
- */
-static int
-sock_gethostbyname (lua_State *L)
-{
-    const char *address = luaL_checkstring(L, 1);
-    struct in_addr *inp = lua_touserdata(L, 2);
-    const int get_aliases = lua_isboolean(L, -1) && lua_toboolean(L, -1);
-    struct hostent *hp;
-    int i;
-
-    sys_vm_leave();
-    hp = gethostbyname(address);
-    sys_vm_enter();
-
-    if (!hp) return sock_seterror(L);
-
-    if (inp) lua_settop(L, 2);
-    else inp = lua_newuserdata(L, sizeof(struct in_addr));
-
-    *inp = *((struct in_addr *) *hp->h_addr_list);
-    lua_pushstring(L, hp->h_name);
-    /* aliases */
-    if (get_aliases && hp->h_aliases) {
-	const char *alias = *hp->h_aliases;
-
-	lua_newtable(L);
-	for (i = 1; alias; ++i, ++alias) {
-	    lua_pushstring(L, alias);
-	    lua_rawseti(L, -2, i);
-	}
-    } else
-	lua_pushnil(L);
-    return 3;
-}
-
-
-static luaL_reg sd_meth[] = {
+static luaL_reg sock_meth[] = {
     {"socket",		sock_socket},
     {"close",		sock_close},
     {"shutdown",	sock_shutdown},
@@ -1001,7 +750,6 @@ static luaL_reg sd_meth[] = {
     {"listen",		sock_listen},
     {"accept",		sock_accept},
     {"connect",		sock_connect},
-    {"getpeername",	sock_getpeername},
     {"send",		sock_send},
     {"recv",		sock_recv},
     {"sendfile",	sock_sendfile},
@@ -1013,17 +761,9 @@ static luaL_reg sd_meth[] = {
     {NULL, NULL}
 };
 
-static luaL_reg socklib[] = {
+static luaL_reg sock_lib[] = {
     {"handle",		sock_new},
-    {"addr_in",		sock_addr_in},
-#ifndef _WIN32
-    {"addr_un",		sock_addr_un},
-#endif
-    {"inet_addr",	sock_inet_addr},
-    {"inet_aton",	sock_inet_aton},
-    {"inet_ntoa",	sock_inet_ntoa},
-    {"gethostbyname",	sock_gethostbyname},
-    {"strerror",	sock_strerror},
+    ADDR_METHODS,
     {NULL, NULL}
 };
 
@@ -1039,7 +779,7 @@ sock_uninit (lua_State *L)
 }
 
 /*
- * Arguments: sock_lib (table)
+ * Arguments: ..., sock_lib (table)
  */
 static int
 sock_init (lua_State *L)
@@ -1067,21 +807,23 @@ sock_init (lua_State *L)
 #endif
 
 
-LUALIB_API int luaopen_sys_sock (lua_State *L);
-
 LUALIB_API int
 luaopen_sys_sock (lua_State *L)
 {
-    luaL_register(L, "sys.sock", socklib);
+    luaL_newmetatable(L, SD_TYPENAME);
+    lua_pushvalue(L, -1);  /* push metatable */
+    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
+    luaL_register(L, NULL, sock_meth);
+
+    luaL_newmetatable(L, SA_TYPENAME);
+    lua_pushvalue(L, -1);  /* push metatable */
+    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
+    luaL_register(L, NULL, addr_meth);
+
+    luaL_register(L, LUA_SOCKLIBNAME, sock_lib);
 
 #ifdef _WIN32
     if (sock_init(L)) return 0;
 #endif
-
-    luaL_newmetatable(L, SD_TYPENAME);
-    lua_pushvalue(L, -1);  /* push metatable */
-    lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
-    luaL_register(L, NULL, sd_meth);
-    lua_pop(L, 1);
     return 1;
 }

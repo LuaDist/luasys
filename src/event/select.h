@@ -10,8 +10,8 @@
 #define EVQ_EXTRA							\
     struct timeout_queue *tq;						\
     fd_t sig_fd[2];  /* pipe to notify about signals */			\
-    struct event *events[FD_SETSIZE];					\
     unsigned int npolls, max_fd;					\
+    struct event *events[FD_SETSIZE];					\
     fd_set readset, writeset;
 
 #endif

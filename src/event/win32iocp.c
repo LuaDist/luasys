@@ -1,11 +1,10 @@
 /* Win32 NT IOCP */
 
 static struct event *
-win32iocp_process (struct event_queue *evq, struct event *ev_ready)
+win32iocp_process (struct event_queue *evq, struct event *ev_ready, msec_t now)
 {
     const HANDLE iocph = evq->iocp.h;
     const OVERLAPPED *wov = &evq->wov;
-    msec_t now = 0L;
 
     for (; ; ) {
 	unsigned long nr;
@@ -32,8 +31,9 @@ win32iocp_process (struct event_queue *evq, struct event *ev_ready)
 	if (ev->flags & EVENT_ONESHOT)
 	    evq_del(ev, 1);
 	else if (ev->tq) {
-	    if (now == 0L)
-		now = get_milliseconds();
+	    if (now == 0L) {
+		now = evq->now = get_milliseconds();
+	    }
 	    timeout_reset(ev, now);
 	}
 

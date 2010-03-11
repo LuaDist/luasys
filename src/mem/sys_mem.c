@@ -1,8 +1,5 @@
 /* Lua System: Memory Buffers */
 
-#include "../common.h"
-
-
 #ifdef _WIN32
 
 #define SYSMEM_HAVE_MMAP
@@ -91,7 +88,7 @@ mem_tobuffer (lua_State *L, int idx)
 	int is_buffer;
 
 	luaL_getmetatable(L, MEM_TYPENAME);
-	is_buffer = (lua_topointer(L, -1) == lua_topointer(L, -2));
+	is_buffer = lua_rawequal(L, -2, -1);
 	lua_pop(L, 2);
 	if (is_buffer) return mb;
     }
@@ -538,25 +535,62 @@ mem_length (lua_State *L)
 }
 
 /*
+ * Arguments: membuf_udata, [offset (number)]
+ * Returns: pointer (ludata)
+ */
+static int
+mem_getptr (lua_State *L)
+{
+    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
+    const int off = lua_tointeger(L, 2);
+    void *ptr = mb->data + memtypesize(mb) * off;
+
+    lua_pushlightuserdata(L, ptr);
+    return 1;
+}
+
+/*
+ * Arguments: membuf_udata, pointer (ludata), [offset (number)]
+ * Returns: membuf_udata
+ */
+static int
+mem_setptr (lua_State *L)
+{
+    struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
+    char *ptr = lua_touserdata(L, 2);
+    const int off = lua_tointeger(L, 3);
+
+    if (memisptr(mb)) {
+	mb->data = ptr;
+	mb->offset = off;
+	lua_settop(L, 1);
+	return 1;
+    }
+    return 0;
+}
+
+/*
  * Arguments: membuf_udata, [offset (number), target (membuf_udata)]
- * Returns: membuf_udata | pointer (ludata) | target (membuf_udata)
+ * Returns: membuf_udata | target (membuf_udata)
  */
 static int
 mem_call (lua_State *L)
 {
     struct membuf *mb = checkudata(L, 1, MEM_TYPENAME);
-    void *ptr = mb->data + memtypesize(mb) * lua_tointeger(L, 2);
-    struct membuf *mb2 = lua_isuserdata(L, 3) ? checkudata(L, 3, MEM_TYPENAME) : NULL;
+    const int off = lua_tointeger(L, 2);
+    void *ptr = mb->data + memtypesize(mb) * off;
 
-    if (mb2) {
-	mb2->data = ptr;
-    } else if (memisptr(mb)) {
-	mb->data = ptr;
+    if (lua_gettop(L) < 3)
 	lua_settop(L, 1);
-    } else {
-	lua_pushlightuserdata(L, ptr);
+    else {
+	mb = checkudata(L, 3, MEM_TYPENAME);
+	lua_settop(L, 3);
     }
-    return 1;
+    if (memisptr(mb)) {
+	mb->data = ptr;
+	return 1;
+    }
+    return 0;
 }
 
 /*
@@ -621,13 +655,13 @@ mem_newindex (lua_State *L)
 	    case SYSMEM_TFLOAT: *((float *) ptr) = (float) num; break;
 	    case SYSMEM_TDOUBLE: *((double *) ptr) = (double) num; break;
 	    case SYSMEM_TNUMBER: *((lua_Number *) ptr) = num; break;
-	    case SYSMEM_TBITSTRING: luaL_typerror(L, 3, "boolean"); break;
+	    case SYSMEM_TBITSTRING: luaL_typeerror(L, 3, "boolean"); break;
 	    }
 	}
 	break;
     case LUA_TBOOLEAN:
 	if (type != SYSMEM_TBITSTRING)
-	    luaL_typerror(L, 1, "bitstring");
+	    luaL_typeerror(L, 1, "bitstring");
 	else {
 	    const int bit = 1 << (off & 7);
 
@@ -645,7 +679,7 @@ mem_newindex (lua_State *L)
 	}
 	break;
     default:
-	luaL_typerror(L, 3, "membuf value");
+	luaL_typeerror(L, 3, "membuf value");
     }
     return 0;
 }
@@ -685,6 +719,8 @@ static luaL_reg mem_meth[] = {
     {"memset",		mem_memset},
     {"length",		mem_length},
     {"__len",		mem_length},
+    {"getptr",		mem_getptr},
+    {"setptr",		mem_setptr},
     {"__call",		mem_call},
     {"__index",		mem_index},
     {"__newindex",	mem_newindex},
@@ -703,18 +739,18 @@ static luaL_reg mem_meth[] = {
     {NULL, NULL}
 };
 
-static luaL_reg memlib[] = {
+static luaL_reg mem_lib[] = {
     {"pointer",		mem_new},
     {NULL, NULL}
 };
 
 
-void
+static void
 luaopen_sys_mem (lua_State *L)
 {
     luaL_newmetatable(L, MEM_TYPENAME);
     luaL_register(L, NULL, mem_meth);
-    luaL_register(L, "sys.mem", memlib);
+    luaL_register(L, "sys.mem", mem_lib);
     lua_pop(L, 2);
 }
 

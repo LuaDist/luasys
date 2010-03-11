@@ -36,10 +36,8 @@
 #define SIGTERM		CTRL_SHUTDOWN_EVENT
 #define NSIG 		(SIGTERM + 1)
 
-#undef EAGAIN
-#define EAGAIN		WSAEWOULDBLOCK
-
 #define SYS_ERRNO	GetLastError()
+#define SYS_EAGAIN(e)	((e) == WSAEWOULDBLOCK)
 
 extern int is_WinNT;
 
@@ -51,6 +49,7 @@ extern int is_WinNT;
 #include <fcntl.h>
 
 #define SYS_ERRNO	errno
+#define SYS_EAGAIN(e)	((e) == EAGAIN || (e) == EWOULDBLOCK)
 
 #define SYS_SIGINTR	SIGWINCH
 
@@ -62,6 +61,14 @@ extern int is_WinNT;
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
+
+#include "luasys.h"
+
+
+#if LUA_VERSION_NUM < 502
+#define lua_rawlen		lua_objlen
+#define luaL_typeerror		luaL_typerror
+#endif
 
 
 #ifdef NO_CHECK_UDATA
@@ -112,6 +119,8 @@ typedef int	sd_t;
 /*
  * Buffer Management
  */
+
+#define MAX_PATHNAME	512
 
 #define SYS_BUFIO_TAG	"bufio__"  /* key to indicate buffer I/O */
 #define SYS_BUFSIZE	4096
@@ -193,7 +202,7 @@ int sys_trigger_notify (sys_trigger_t *trigger, int flags);
  * Time
  */
 
-typedef unsigned long	msec_t;
+typedef int	msec_t;
 
 #ifdef _WIN32
 #define get_milliseconds	timeGetTime
@@ -201,15 +210,17 @@ typedef unsigned long	msec_t;
 msec_t get_milliseconds (void);
 #endif
 
-#define TIMEOUT_INFINITE	(~((msec_t) 0UL))
+#define TIMEOUT_INFINITE	((msec_t) -1)
 
 
 /*
- * Internal Libraries
+ * Convert Windows OS filenames to UTF-8
  */
 
-void luaopen_sys_mem (lua_State *L);
-void luaopen_sys_thread (lua_State *L);
-void luaopen_sys_win32 (lua_State *L);
+#ifdef _WIN32
+void *utf8_to_filename (const char *s);
+char *filename_to_utf8 (const void *s);
+#endif
+
 
 #endif

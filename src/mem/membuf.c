@@ -73,7 +73,7 @@ membuf_write (lua_State *L)
 
     nargs = lua_gettop(L);
     for (i = 2; i <= nargs; ++i) {
-	size_t len = lua_strlen(L, i);
+	size_t len = lua_rawlen(L, i);
 	if (len && !membuf_addlstring(L, mb, lua_tostring(L, i), len))
 	    return 0;
     }

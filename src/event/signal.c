@@ -141,31 +141,31 @@ signal_del (struct event_queue *evq, struct event *ev)
 }
 
 static struct event *
-signal_active (struct event *ev, struct event *ev_ready, msec_t timeout)
+signal_active (struct event *ev, struct event *ev_ready, msec_t now)
 {
     ev->flags |= EVENT_ACTIVE | EVENT_READ_RES;
     if (ev->flags & EVENT_ONESHOT)
 	evq_del(ev, 1);
     else if (ev->tq)
-	timeout_reset(ev, timeout);
+	timeout_reset(ev, now);
 
     ev->next_ready = ev_ready;
     return ev;
 }
 
 static struct event *
-signal_actives (int signo, struct event *ev_ready, msec_t timeout)
+signal_actives (int signo, struct event *ev_ready, msec_t now)
 {
     struct event *ev = g_SigEvents[signo];
 
     for (; ev; ev = ev->next_object)
-	ev_ready = signal_active(ev, ev_ready, timeout);
+	ev_ready = signal_active(ev, ev_ready, now);
 
     return ev_ready;
 }
 
 static struct event *
-signal_children (struct event *ev_ready, msec_t timeout)
+signal_children (struct event *ev_ready, msec_t now)
 {
     for (; ; ) {
 	struct event *ev;
@@ -180,7 +180,7 @@ signal_children (struct event *ev_ready, msec_t timeout)
 	    if ((int) ev->fd == pid) {
 		ev->flags |= !WIFEXITED(status) ? EVENT_EOF_MASK_RES
 		 : ((unsigned int) WEXITSTATUS(status) << EVENT_EOF_SHIFT_RES);
-		ev_ready = signal_active(ev, ev_ready, timeout);
+		ev_ready = signal_active(ev, ev_ready, now);
 		break;
 	    }
     }
@@ -188,7 +188,7 @@ signal_children (struct event *ev_ready, msec_t timeout)
 
 #ifndef USE_KQUEUE
 static struct event *
-signal_process (struct event_queue *evq, struct event *ev_ready, msec_t timeout)
+signal_process (struct event_queue *evq, struct event *ev_ready, msec_t now)
 {
     const fd_t fd = evq->sig_fd[0];
     int set = 0;
@@ -210,8 +210,8 @@ signal_process (struct event_queue *evq, struct event *ev_ready, msec_t timeout)
 	    if (!(set & bit)) {
 		set |= bit;
 		ev_ready = (signo == SIGCHLD)
-		 ? signal_children(ev_ready, timeout)
-		 : signal_actives(signo, ev_ready, timeout);
+		 ? signal_children(ev_ready, now)
+		 : signal_actives(signo, ev_ready, now);
 	    }
 	}
     }

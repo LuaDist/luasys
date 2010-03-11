@@ -1,4 +1,4 @@
-/* Win32: MsgWaitForMultipleObjects and multiple threads */
+/* Win32 */
 
 #define WFD_READ	(FD_READ | FD_ACCEPT | FD_CLOSE)
 #define WFD_WRITE	(FD_WRITE | FD_CONNECT | FD_CLOSE)
@@ -7,23 +7,6 @@
 #include "win32iocp.c"
 #include "win32thr.c"
 
-
-int
-event_set_timeout (struct event *ev, msec_t msec)
-{
-    struct win32thr *wth = ev->wth;
-    const unsigned int ev_flags = ev->flags;
-
-    if (!(ev_flags & EVENT_ACTIVE))
-	win32thr_sleep(wth);
-
-    if (msec == TIMEOUT_INFINITE && !(ev_flags & EVENT_TIMER)) {
-	timeout_del(&wth->tq, ev);
-	return 0;
-    }
-
-    return timeout_add(&wth->tq, ev, msec);
-}
 
 int
 evq_init (struct event_queue *evq)
@@ -48,23 +31,21 @@ evq_init (struct event_queue *evq)
     if (is_WinNT)
 	evq->iocp.h = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
 
+    evq->now = get_milliseconds();
     return 0;
 }
 
 void
 evq_done (struct event_queue *evq)
 {
-    struct win32thr *wth = &evq->head;
-
-    if (wth->next)
-	win32thr_poll(evq);
+    win32thr_poll(evq);
 
     if (evq->iocp.h)
 	CloseHandle(evq->iocp.h);
 
     CloseHandle(evq->ack_event);
-    CloseHandle(wth->signal);
-    DeleteCriticalSection(&wth->cs);
+    CloseHandle(evq->head.signal);
+    DeleteCriticalSection(&evq->head.cs);
 }
 
 int
@@ -115,17 +96,61 @@ evq_add_dirwatch (struct event_queue *evq, struct event *ev, const char *path)
      | FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE
      | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION
      | FILE_NOTIFY_CHANGE_SECURITY;
-
     const unsigned int filter = (ev->flags >> EVENT_EOF_SHIFT_RES)
      ? FILE_NOTIFY_CHANGE_LAST_WRITE : flags;
+    HANDLE fd;
 
     ev->flags &= ~EVENT_EOF_MASK_RES;
 
-    ev->fd = FindFirstChangeNotification(path, FALSE, filter);
-    if (ev->fd == NULL || ev->fd == INVALID_HANDLE_VALUE)
+    {
+	void *os_path = utf8_to_filename(path);
+	if (!os_path)
+	    return -1;
+
+	fd = is_WinNT
+	 ? FindFirstChangeNotificationW(os_path, FALSE, filter)
+	 : FindFirstChangeNotificationA(os_path, FALSE, filter);
+
+	free(os_path);
+    }
+    if (fd == NULL || fd == INVALID_HANDLE_VALUE)
 	return -1;
 
+    ev->fd = fd;
     return evq_add(evq, ev);
+}
+
+int
+evq_set_timeout (struct event *ev, msec_t msec)
+{
+    struct win32thr *wth = ev->wth;
+    struct event_queue *evq = wth->evq;
+
+    if (!(ev->flags & EVENT_ACTIVE))
+	win32thr_sleep(wth);
+
+    if (ev->tq) {
+	if (ev->tq->msec == msec) {
+	    timeout_reset(ev, evq->now);
+	    return 0;
+	}
+	timeout_del(ev);
+	if (msec == TIMEOUT_INFINITE)
+	    return 0;
+    }
+
+    return timeout_add(ev, msec, evq->now);
+}
+
+int
+evq_add_timer (struct event_queue *evq, struct event *ev, msec_t msec)
+{
+    ev->wth = &evq->head;
+    if (!evq_set_timeout(ev, msec)) {
+	evq->nevents++;
+	return 0;
+    }
+    return -1;
 }
 
 int
@@ -134,14 +159,13 @@ evq_del (struct event *ev, int reuse_fd)
     struct win32thr *wth = ev->wth;
     const unsigned int ev_flags = ev->flags;
 
-    if (ev_flags & (EVENT_AIO | EVENT_SIGNAL | EVENT_WINMSG)) {
+    if (ev_flags & (EVENT_TIMER | EVENT_AIO | EVENT_SIGNAL | EVENT_WINMSG)) {
 	struct event_queue *evq = wth->evq;
+
+	if (ev->tq) timeout_del(ev);
 
 	ev->wth = NULL;
 	evq->nevents--;
-
-	if (ev->tq)
-	    timeout_del(&wth->tq, ev);
 
 	if (ev_flags & EVENT_AIO) {
 	    if (reuse_fd && (ev_flags & EVENT_PENDING))
@@ -153,8 +177,10 @@ evq_del (struct event *ev, int reuse_fd)
 	if (ev_flags & EVENT_SIGNAL)
 	    return signal_del(ev);
 
-	/* if (ev_flags & EVENT_WINMSG) */
-	evq->win_msg = NULL;
+	if (ev_flags & EVENT_WINMSG)
+	    evq->win_msg = NULL;
+
+	/* EVENT_TIMER */
 	return 0;
     }
 
@@ -165,7 +191,7 @@ evq_del (struct event *ev, int reuse_fd)
 }
 
 int
-evq_change (struct event *ev, unsigned int flags)
+evq_modify (struct event *ev, unsigned int flags)
 {
     const unsigned int ev_flags = ev->flags;
 
@@ -193,33 +219,12 @@ evq_change (struct event *ev, unsigned int flags)
 }
 
 int
-evq_add_timer (struct event_queue *evq, struct event *ev, msec_t msec)
-{
-    if (!timeout_add(&evq->head.tq, ev, msec)) {
-	ev->wth = &evq->head;
-	evq->nevents++;
-	return 0;
-    }
-    return -1;
-}
-
-void
-evq_del_timer (struct event *ev)
-{
-    struct event_queue *evq = ev->wth->evq;
-
-    ev->wth = NULL;
-    evq->nevents--;
-    timeout_del(&evq->head.tq, ev);
-}
-
-int
 evq_interrupt (struct event_queue *evq)
 {
     return !SetEvent(evq->head.signal);
 }
 
-struct event *
+int
 evq_wait (struct event_queue *evq, msec_t timeout)
 {
     struct event *ev_ready = NULL;
@@ -231,35 +236,38 @@ evq_wait (struct event_queue *evq, msec_t timeout)
     DWORD wait_res;
 
     if (threads && win32thr_poll(evq) && evq_is_empty(evq))
-	return NULL;
+	return 0;
 
     if (!iocp_is_empty(evq))
-	ev_ready = win32iocp_process(evq, ev_ready);
+	ev_ready = win32iocp_process(evq, ev_ready, 0L);
 
     sys_vm_leave();
 
     wait_res = MsgWaitForMultipleObjects(n + 1, wth->handles, FALSE,
-     ev_ready ? 0L : timeout_get(wth->tq, timeout),
+     ev_ready ? 0L : timeout_get(wth->tq, timeout, evq->now),
      evq->win_msg ? QS_ALLEVENTS : 0);
+
+    evq->now = get_milliseconds();
 
     sys_vm_enter();
 
     if (wait_res == WAIT_TIMEOUT) {
-	if (ev_ready)
-	    return ev_ready;
+	if (ev_ready) goto end;
 	if (!wth->tq)
 	    return EVQ_TIMEOUT;
     }
     if (wait_res == (WAIT_OBJECT_0 + n + 1)) {
 	struct event *ev = evq->win_msg;
 	if (ev) ev->next_ready = NULL;
-	return ev;
+	evq->ev_ready = ev;
+	return 0;
     }
     if (wait_res == WAIT_FAILED)
 	return EVQ_FAILED;
 
+    timeout = evq->now;
     if (!iocp_is_empty(evq))
-	ev_ready = win32iocp_process(evq, ev_ready);
+	ev_ready = win32iocp_process(evq, ev_ready, timeout);
 
     wth->idx = wait_res;
 
@@ -267,8 +275,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	EnterCriticalSection(head_cs);
 	ResetEvent(wth->signal);
 
-	threads = evq->ready;
-	evq->ready = NULL;
+	threads = evq->wth_ready;
+	evq->wth_ready = NULL;
 
 	sig_ready = evq->sig_ready;
 	evq->sig_ready = 0;
@@ -291,11 +299,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	}
     }
 
-    if (sig_ready) {
-	timeout = get_milliseconds();
+    if (sig_ready)
 	ev_ready = signal_process(sig_ready, ev_ready, timeout);
-    } else
-	timeout = 0L;
 
     for (; wth; wth = wth->next_ready) {
 	HANDLE *hp;  /* event handles */
@@ -306,11 +311,9 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 
 	if (wth->tq) {
 	    if (idx == WAIT_TIMEOUT) {
-		ev_ready = timeout_process(wth->tq, ev_ready);
+		ev_ready = timeout_process(wth->tq, ev_ready, timeout);
 		continue;
 	    }
-	    if (timeout == 0L)
-		timeout = get_milliseconds();
 	}
 
 	hp = &wth->handles[idx];
@@ -362,7 +365,7 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	    } while (WaitForSingleObject(*(++hp), 0) != WAIT_OBJECT_0);
 	}
  end_thread:
-	;  /* avoid warning */
+	((void) 0);  /* avoid warning */
     }
 
     /* always check window messages */
@@ -374,7 +377,10 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	    ev_ready = ev;
 	}
     }
-    return ev_ready ? ev_ready
-     : (wait_res == WAIT_TIMEOUT ? EVQ_TIMEOUT : NULL);
+    if (!ev_ready)
+	return (wait_res == WAIT_TIMEOUT) ? EVQ_TIMEOUT : 0;
+ end:
+    evq->ev_ready = ev_ready;
+    return 0;
 }
 

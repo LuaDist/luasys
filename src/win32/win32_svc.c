@@ -1,7 +1,5 @@
 /* Lua System: Win32 specifics: Service */
 
-#include "../common.h"
-
 #define WSVC_TYPENAME	"sys.win32.service"
 
 
@@ -13,21 +11,21 @@ static int
 svc_install (lua_State *L)
 {
     const char *name = luaL_checkstring(L, 1);
-    int pathlen = lua_strlen(L, 2);
+    int pathlen = lua_rawlen(L, 2);
     const int manual = lua_toboolean(L, 3);
     SC_HANDLE mngr = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
     SC_HANDLE sc = NULL;
 
-    if (!pathlen || ++pathlen >= MAX_PATH)  /* include space & term. '\0' */
+    if (!pathlen || ++pathlen >= MAX_PATHNAME)  /* include space & term. '\0' */
 	return 0;
     if (mngr) {
-	char path[2*MAX_PATH];
-	const int n = GetModuleFileName(NULL, path, MAX_PATH);
+	char path[MAX_PATHNAME*2];
+	const int n = GetModuleFileNameA(NULL, path, MAX_PATHNAME);
 
 	if (n) {
 	    path[n] = ' ';
 	    memcpy(path + n + 1, lua_tostring(L, 2), pathlen);
-	    sc = CreateService(mngr, name, name,
+	    sc = CreateServiceA(mngr, name, name,
 	     SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
 	     manual ? SERVICE_DEMAND_START : SERVICE_AUTO_START,
 	     SERVICE_ERROR_NORMAL,
@@ -55,7 +53,7 @@ svc_uninstall (lua_State *L)
     int res = 0;
 
     if (mngr) {
-	SC_HANDLE sc = OpenService(mngr, name, SERVICE_ALL_ACCESS | DELETE);
+	SC_HANDLE sc = OpenServiceA(mngr, name, SERVICE_ALL_ACCESS | DELETE);
 
 	if (sc) {
 	    SERVICE_STATUS status;
@@ -87,7 +85,6 @@ static struct {
     SERVICE_STATUS status;
     SERVICE_STATUS_HANDLE hstatus;
     HANDLE event;
-    int code;
     int accept_pause_cont;
 } g_Service;
 
@@ -111,11 +108,10 @@ svc_controller (DWORD code)
 	}
 	break;
     }
+
     SetServiceStatus(g_Service.hstatus, &g_Service.status);
-    if (accept) {
-	g_Service.code = code;
+    if (accept)
 	SetEvent(g_Service.event);
-    }
 }
 
 static void WINAPI
@@ -123,7 +119,7 @@ svc_main (DWORD argc, char *argv[])
 {
     (void) argc;
 
-    g_Service.hstatus = RegisterServiceCtrlHandler(argv[0], svc_controller);
+    g_Service.hstatus = RegisterServiceCtrlHandlerA(argv[0], svc_controller);
     if (g_Service.hstatus) {
 	/* initialise service status */
 	g_Service.status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
@@ -164,7 +160,7 @@ svc_handle (lua_State *L)
     DWORD id;
 
     if (g_Service.event)
-	luaL_argerror(L, 0, "Service started");
+	luaL_argerror(L, 0, "already running");
     else {
 	HANDLE *hep = lua_newuserdata(L, sizeof(HANDLE));
 	luaL_getmetatable(L, WSVC_TYPENAME);
@@ -177,7 +173,7 @@ svc_handle (lua_State *L)
 	g_Service.accept_pause_cont = accept_pause_cont;
     }
 
-    hThr = CreateThread(NULL, 0, svc_start, svc_name, 0, &id);
+    hThr = CreateThread(NULL, 4096, svc_start, svc_name, 0, &id);
     if (hThr != NULL) {
 	CloseHandle(hThr);
 
@@ -226,15 +222,25 @@ svc_status (lua_State *L)
 	}
 	g_Service.status.dwCurrentState = st;
 
+	sys_vm_leave();
 	SetServiceStatus(g_Service.hstatus, &g_Service.status);
+	Sleep(0);
+	sys_vm_enter();
+
 	lua_settop(L, 1);
-    } else {
-	switch (g_Service.code) {
-	case SERVICE_CONTROL_SHUTDOWN:
-	case SERVICE_CONTROL_STOP: s = "stop"; break;
-	case SERVICE_CONTROL_PAUSE: s = "pause"; break;
-	case SERVICE_CONTROL_CONTINUE: s = "continue"; break;
-	default: return 0;
+    }
+    else {
+	switch (g_Service.status.dwCurrentState) {
+	case SERVICE_STOPPED:
+	case SERVICE_STOP_PENDING:
+	    s = "stop"; break;
+	case SERVICE_RUNNING:
+	    s = "running"; break;
+	case SERVICE_CONTINUE_PENDING:
+	    s = "continue"; break;
+	case SERVICE_PAUSE_PENDING:
+	case SERVICE_PAUSED:
+	    s = "pause"; break;
 	}
 	lua_pushstring(L, s);
     }
@@ -284,12 +290,13 @@ static luaL_reg svc_meth[] = {
     {NULL, NULL}
 };
 
-static luaL_reg wsvclib[] = {
+static luaL_reg svc_lib[] = {
     {"install",		svc_install},
     {"uninstall",	svc_uninstall},
     {"handle",		svc_handle},
     {NULL, NULL}
 };
+
 
 static void
 luaopen_sys_win32_service (lua_State *L)
@@ -299,6 +306,6 @@ luaopen_sys_win32_service (lua_State *L)
     lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
     luaL_register(L, NULL, svc_meth);
 
-    luaL_register(L, "sys.win32.service", wsvclib);
+    luaL_register(L, "sys.win32.service", svc_lib);
     lua_pop(L, 2);
 }

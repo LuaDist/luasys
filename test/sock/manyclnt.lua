@@ -5,7 +5,7 @@ local sock = require"sys.sock"
 
 
 local host, port = "127.0.0.1", 8080
-local nclnt = 200
+local nclnt = 2000
 
 local stdin, stdout, stderr = sys.stdin, sys.stdout, sys.stderr
 
@@ -25,7 +25,7 @@ local function ev_cb(evq, evid, fd, R)
 	end
 
 	iskt = iskt + 1
-	if iskt == nclnt then
+	if nclnt - iskt < 1 then
 	    -- close all sockets
 	    for i = 1, nclnt do
 		evid = askt[i]
@@ -41,11 +41,11 @@ local start_time = sys.msec()
 
 local evq = assert(sys.event_queue())
 
-local addr = sock.addr_in(port, sock.inet_aton(host))
+local saddr = sock.addr():inet(port, sock.inet_pton(host))
 for i = 1, nclnt do
     local fd = sock.handle()
     assert(fd:socket())
-    assert(fd:connect(addr))
+    assert(fd:connect(saddr))
 
     local evid = evq:add_socket(fd, 'w', ev_cb)
     if not evid then

@@ -3,7 +3,6 @@
 int
 evq_init (struct event_queue *evq)
 {
-#ifndef _WIN32
     fd_t *sig_fd = evq->sig_fd;
 
     sig_fd[0] = sig_fd[1] = (fd_t) -1;
@@ -17,21 +16,16 @@ evq_init (struct event_queue *evq)
 	evq->max_fd = fd;
 	evq->npolls++;
     }
-#else
-    (void) evq;
-#endif
+
+    evq->now = get_milliseconds();
     return 0;
 }
 
 void
 evq_done (struct event_queue *evq)
 {
-#ifndef _WIN32
     close(evq->sig_fd[0]);
     close(evq->sig_fd[1]);
-#else
-    (void) evq;
-#endif
 }
 
 int
@@ -41,10 +35,8 @@ evq_add (struct event_queue *evq, struct event *ev)
 
     ev->evq = evq;
 
-#ifndef _WIN32
     if (ev->flags & EVENT_SIGNAL)
 	return signal_add(evq, ev);
-#endif
 
     if (evq->npolls >= FD_SETSIZE)
 	return -1;
@@ -55,10 +47,8 @@ evq_add (struct event_queue *evq, struct event *ev)
     if (ev->flags & EVENT_WRITE)
 	FD_SET(fd, &evq->writeset);
 
-#ifndef _WIN32
     if ((int) evq->max_fd != -1 && evq->max_fd < fd)
 	evq->max_fd = fd;
-#endif
 
     evq->events[evq->npolls] = ev;
     ev->index = evq->npolls++;
@@ -81,30 +71,31 @@ int
 evq_del (struct event *ev, int reuse_fd)
 {
     struct event_queue *evq = ev->evq;
-    const unsigned int fd = (unsigned int) ev->fd;
+    const unsigned int ev_flags = ev->flags;
 
     (void) reuse_fd;
+
+    if (ev->tq) timeout_del(ev);
 
     ev->evq = NULL;
     evq->nevents--;
 
-    if (ev->tq)
-	timeout_del(&evq->tq, ev);
+    if (ev_flags & EVENT_TIMER) return 0;
 
-#ifndef _WIN32
-    if (ev->flags & EVENT_SIGNAL)
+    if (ev_flags & EVENT_SIGNAL)
 	return signal_del(evq, ev);
-#endif
 
-    if (ev->flags & EVENT_READ)
-	FD_CLR(fd, &evq->readset);
-    if (ev->flags & EVENT_WRITE)
-	FD_CLR(fd, &evq->writeset);
+    {
+	const unsigned int fd = (unsigned int) ev->fd;
 
-#ifndef _WIN32
-    if (evq->max_fd == fd)
-	evq->max_fd = -1;
-#endif
+	if (ev_flags & EVENT_READ)
+	    FD_CLR(fd, &evq->readset);
+	if (ev_flags & EVENT_WRITE)
+	    FD_CLR(fd, &evq->writeset);
+
+	if (evq->max_fd == fd)
+	    evq->max_fd = -1;
+    }
 
     if (ev->index < --evq->npolls) {
 	struct event **events = evq->events;
@@ -117,7 +108,7 @@ evq_del (struct event *ev, int reuse_fd)
 }
 
 int
-evq_change (struct event *ev, unsigned int flags)
+evq_modify (struct event *ev, unsigned int flags)
 {
     struct event_queue *evq = ev->evq;
     const unsigned int fd = (unsigned int) ev->fd;
@@ -130,10 +121,8 @@ evq_change (struct event *ev, unsigned int flags)
 	if (rw & EVENT_WRITE)
 	    FD_SET(fd, &evq->writeset);
 
-#ifndef _WIN32
 	if ((int) evq->max_fd != -1 && evq->max_fd < fd)
 	    evq->max_fd = fd;
-#endif
     }
 
     rw = ev->flags & (ev->flags ^ flags);
@@ -143,10 +132,8 @@ evq_change (struct event *ev, unsigned int flags)
 	if (rw & EVENT_WRITE)
 	    FD_CLR(fd, &evq->writeset);
 
-#ifndef _WIN32
 	if (evq->max_fd == fd)
 	    evq->max_fd = -1;
-#endif
     }
     return 0;
 }
@@ -162,7 +149,6 @@ evq_wait (struct event_queue *evq, msec_t timeout)
     const int npolls = evq->npolls;
     int i, nready;
 
-#ifndef _WIN32
     int max_fd = evq->max_fd;
 
     if (max_fd == -1) {
@@ -173,9 +159,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	}
 	evq->max_fd = max_fd;
     }
-#endif
 
-    timeout = timeout_get(evq->tq, timeout);
+    timeout = timeout_get(evq->tq, timeout, evq->now);
     if (timeout == TIMEOUT_INFINITE)
 	tvp = NULL;
     else {
@@ -186,33 +171,30 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 
     sys_vm_leave();
 
-#ifndef _WIN32
     nready = select(max_fd + 1, &work_readset, &work_writeset, NULL, tvp);
-#else
-    nready = select(0, &work_readset, &work_writeset, NULL, tvp);
-#endif
+    evq->now = get_milliseconds();
 
     sys_vm_enter();
 
     if (nready == -1)
-	return (errno == EINTR) ? NULL : EVQ_FAILED;
+	return (errno == EINTR) ? 0 : EVQ_FAILED;
 
     if (tvp) {
 	if (!nready) {
-	    ev_ready = evq->tq ? timeout_process(evq->tq, NULL) : NULL;
-	    return ev_ready ? ev_ready : EVQ_TIMEOUT;
+	    ev_ready = !evq->tq ? NULL
+	     : timeout_process(evq->tq, NULL, evq->now);
+	    if (ev_ready) goto end;
+	    return EVQ_TIMEOUT;
 	}
 
-	timeout = get_milliseconds();
+	timeout = evq->now;
     }
 
     ev_ready = NULL;
-#ifndef _WIN32
     if (FD_ISSET(evq->sig_fd[0], &work_readset)) {
 	ev_ready = signal_process(evq, ev_ready, timeout);
 	--nready;
     }
-#endif
 
     for (i = 1; i < npolls; i++) {
 	struct event *ev = events[i];
@@ -237,6 +219,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	    if (!--nready) break;
 	}
     }
-    return ev_ready;
+ end:
+    evq->ev_ready = ev_ready;
+    return 0;
 }
 
