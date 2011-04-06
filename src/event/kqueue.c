@@ -8,10 +8,13 @@ evq_init (struct event_queue *evq)
     evq->kqueue_fd = kqueue();
     if (evq->kqueue_fd == -1)
 	return -1;
+
     if (evq_ignore_signal(evq, SYS_SIGINTR, 0)) {
 	close(evq->kqueue_fd);
 	return -1;
     }
+
+    evq->now = get_milliseconds();
     return 0;
 }
 
@@ -111,16 +114,17 @@ evq_del (struct event *ev, int reuse_fd)
     struct event_queue *evq = ev->evq;
     const unsigned int ev_flags = ev->flags;
 
+    if (ev->tq) timeout_del(ev);
+
     ev->evq = NULL;
     evq->nevents--;
 
-    if (ev->tq)
-	timeout_del(&evq->tq, ev);
+    if (ev_flags & EVENT_TIMER) return 0;
 
     if (ev_flags & EVENT_SIGNAL)
 	return signal_del(evq, ev);
 
-    if (ev->flags & EVENT_DIRWATCH)
+    if (ev_flags & EVENT_DIRWATCH)
 	return close(ev->fd);
 
     if (!reuse_fd) return 0;
@@ -132,7 +136,7 @@ evq_del (struct event *ev, int reuse_fd)
 }
 
 int
-evq_change (struct event *ev, unsigned int flags)
+evq_modify (struct event *ev, unsigned int flags)
 {
     struct event_queue *evq = ev->evq;
     const unsigned int ev_flags = ev->flags;
@@ -171,7 +175,7 @@ evq_wait (struct event_queue *evq, msec_t timeout)
     struct timespec ts, *tsp;
     int nready;
 
-    timeout = timeout_get(evq->tq, timeout);
+    timeout = timeout_get(evq->tq, timeout, evq->now);
     if (timeout == TIMEOUT_INFINITE)
 	tsp = NULL;
     else {
@@ -184,19 +188,22 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 
     nready = kevent(evq->kqueue_fd, kev, evq->nchanges, kev, NEVENT, tsp);
     evq->nchanges = 0;
+    evq->now = get_milliseconds();
 
     sys_vm_enter();
 
     if (nready == -1)
-	return (errno == EINTR) ? NULL : EVQ_FAILED;
+	return (errno == EINTR) ? 0 : EVQ_FAILED;
 
     if (tsp) {
 	if (!nready) {
-	    ev_ready = evq->tq ? timeout_process(evq->tq, NULL) : NULL;
-	    return ev_ready ? ev_ready : EVQ_TIMEOUT;
+	    ev_ready = !evq->tq ? NULL
+	     : timeout_process(evq->tq, NULL, evq->now);
+	    if (ev_ready) goto end;
+	    return EVQ_TIMEOUT;
 	}
 
-	timeout = get_milliseconds();
+	timeout = evq->now;
     }
 
     ev_ready = NULL;
@@ -233,6 +240,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	ev->next_ready = ev_ready;
 	ev_ready = ev;
     }
-    return ev_ready;
+ end:
+    evq->ev_ready = ev_ready;
+    return 0;
 }
 

@@ -10,11 +10,12 @@ local MAX_MSG_LEN = 100
 local fd = sock.handle()
 assert(fd:socket("dgram"))
 
-local addr = sock.addr_in(port, sock.inet_aton(host))
+local saddr = sock.addr()
+assert(saddr:inet(port, sock.inet_pton(host)))
 
 fd:nonblocking(true)
-if fd:send("get time", addr) then
-    local data = assert(fd:recv(MAX_MSG_LEN, addr))
-    port, host = sock.addr_in(addr)
-    print(sock.inet_ntoa(host) .. ":" .. port .. "> " .. data)
+if fd:send("get time", saddr) then
+    local data = assert(fd:recv(MAX_MSG_LEN, saddr))
+    port, host = saddr:inet()
+    print(sock.inet_ntop(host) .. ":" .. port .. "> " .. data)
 end

@@ -73,7 +73,7 @@ membuf_write (lua_State *L)
 
     nargs = lua_gettop(L);
     for (i = 2; i <= nargs; ++i) {
-	size_t len = lua_strlen(L, i);
+	size_t len = lua_rawlen(L, i);
 	if (len && !membuf_addlstring(L, mb, lua_tostring(L, i), len))
 	    return 0;
     }
@@ -139,7 +139,7 @@ membuf_assosiate (lua_State *L, int type)
     else {
 	mb->flags |= type;
 
-	lua_getfield(L, -1, SYS_BUFIO_META);
+	lua_getfield(L, -1, SYS_BUFIO_TAG);
 	if (!lua_isnil(L, -1)) {
 	    mb->flags |= (type == SYSMEM_ISTREAM)
 	     ? SYSMEM_ISTREAM_BUFIO : SYSMEM_OSTREAM_BUFIO;
@@ -264,7 +264,8 @@ read_line (lua_State *L, struct membuf *mb)
 	lua_pop(L, 1);
     }
  end:
-    if ((l = mb->offset))
+    l = mb->offset;
+    if (l != 0)
 	lua_pushlstring(L, mb->data, l);
     else
 	lua_pushnil(L);

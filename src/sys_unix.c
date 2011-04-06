@@ -32,7 +32,7 @@ sys_daemonize (lua_State *L)
     default: _exit(0);
     }
     if (setsid() == -1 || chdir("/") == -1)
-	return 0;
+	goto err;
     umask(0);
     /* standard files */
     {
@@ -47,3 +47,25 @@ sys_daemonize (lua_State *L)
     return sys_seterror(L, 0);
 }
 
+/*
+ * Arguments: path (string), [permissions (number)]
+ * Returns: [boolean]
+ */
+static int
+sys_mkfifo (lua_State *L)
+{
+    const char *path = luaL_checkstring(L, 1);
+    mode_t perm = (mode_t) luaL_optinteger(L, 2, SYS_FILE_PERMISSIONS);
+
+    if (!mkfifo(path, perm)) {
+	lua_pushboolean(L, 1);
+	return 1;
+    }
+    return sys_seterror(L, 0);
+}
+
+
+#define UNIX_METHODS \
+    {"chroot",		sys_chroot}, \
+    {"daemonize",	sys_daemonize}, \
+    {"mkfifo",		sys_mkfifo}

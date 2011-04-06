@@ -11,7 +11,7 @@ local stdin, stdout = sys.stdin, sys.stdout
 local fd = sock.handle()
 assert(fd:socket())
 
-assert(fd:connect(sock.addr_in(port, sock.inet_aton(host))))
+assert(fd:connect(sock.addr():inet(port, sock.inet_pton(host))))
 
 while true do
     local line = stdin:read()

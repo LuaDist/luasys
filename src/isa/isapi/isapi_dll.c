@@ -23,7 +23,7 @@ static struct {
     int nthreads;
     struct sys_thread *threads[LISAPI_POOL_THREADS];
 
-    char root[MAX_PATH];
+    char root[MAX_PATHNAME];
 } g_ISAPI;
 
 
@@ -52,7 +52,7 @@ static int
 lisapi_init (void)
 {
     lua_State *L;
-    char path[2 * MAX_PATH];
+    char path[MAX_PATHNAME*2];
 
     if (g_ISAPI.vmtd) return 0;
 
@@ -162,7 +162,7 @@ DllMain (HANDLE hmodule, DWORD reason, LPVOID reserved)
     (void) reserved;
 
     if (reason == DLL_PROCESS_ATTACH) {
-	int n = GetModuleFileName(hmodule, g_ISAPI.root, MAX_PATH);
+	int n = GetModuleFileNameA(hmodule, g_ISAPI.root, MAX_PATHNAME);
 	char *sep;
 
 	if (!n) return FALSE;

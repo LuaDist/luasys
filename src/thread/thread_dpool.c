@@ -65,7 +65,7 @@ dpool_put (lua_State *L)
     int nput = lua_gettop(L) - 1;
 
     if (!td) luaL_argerror(L, 0, "Threading not initialized");
-    if (!nput) luaL_argerror(L, 2, "Data expected");
+    if (!nput) luaL_argerror(L, 2, "data expected");
 
     lua_getfenv(L, 1);  /* storage */
     lua_insert(L, 1);

@@ -12,10 +12,6 @@ evq_init (struct event_queue *evq)
     if (evq->epoll_fd == -1)
 	return -1;
 
-    evq->ep_events = malloc(NEVENT * sizeof(struct epoll_event));
-    if (!evq->ep_events)
-	return -1;
-
     {
 	struct epoll_event epev;
 
@@ -30,8 +26,7 @@ evq_init (struct event_queue *evq)
 	}
     }
 
-    evq->npolls++;
-    evq->max_polls = NEVENT;
+    evq->now = get_milliseconds();
     return 0;
 }
 
@@ -42,42 +37,32 @@ evq_done (struct event_queue *evq)
     close(evq->sig_fd[1]);
 
     close(evq->epoll_fd);
-    free(evq->ep_events);
 }
 
 int
 evq_add (struct event_queue *evq, struct event *ev)
 {
+    const unsigned int ev_flags = ev->flags;
+
     ev->evq = evq;
 
-    if (ev->flags & EVENT_SIGNAL)
+    if (ev_flags & EVENT_SIGNAL)
 	return signal_add(evq, ev);
-
-    if (evq->npolls >= evq->max_polls) {
-	const unsigned int n = 2 * evq->max_polls;
-	void *p;
-
-	if (!(p = realloc(evq->ep_events, n * sizeof(struct epoll_event))))
-	    return -1;
-	evq->ep_events = p;
-	evq->max_polls = n;
-    }
 
     {
 	struct epoll_event epev;
 
 	memset(&epev, 0, sizeof(struct epoll_event));
-	if (ev->flags & EVENT_READ)
+	if (ev_flags & EVENT_READ)
 	    epev.events = EPOLLIN;
-	if (ev->flags & EVENT_WRITE)
+	if (ev_flags & EVENT_WRITE)
 	    epev.events |= EPOLLOUT;
-	epev.events |= (ev->flags & EVENT_ONESHOT) ? EPOLLONESHOT : 0;
+	epev.events |= (ev_flags & EVENT_ONESHOT) ? EPOLLONESHOT : 0;
 	epev.data.ptr = ev;
 	if (epoll_ctl(evq->epoll_fd, EPOLL_CTL_ADD, ev->fd, &epev) == -1)
 	    return -1;
     }
 
-    evq->npolls++;
     evq->nevents++;
     return 0;
 }
@@ -105,36 +90,28 @@ int
 evq_del (struct event *ev, int reuse_fd)
 {
     struct event_queue *evq = ev->evq;
-    const unsigned int npolls = --evq->npolls;
-    int i;
+    const unsigned int ev_flags = ev->flags;
+
+    if (ev->tq) timeout_del(ev);
 
     ev->evq = NULL;
     evq->nevents--;
 
-    if (ev->tq)
-	timeout_del(&evq->tq, ev);
+    if (ev_flags & EVENT_TIMER) return 0;
 
-    if (ev->flags & EVENT_SIGNAL)
+    if (ev_flags & EVENT_SIGNAL)
 	return signal_del(evq, ev);
 
-    if (ev->flags & EVENT_DIRWATCH)
+    if (ev_flags & EVENT_DIRWATCH)
 	return close(ev->fd);
 
     if (reuse_fd)
-     epoll_ctl(evq->epoll_fd, EPOLL_CTL_DEL, ev->fd, NULL);
-
-    if (npolls > NEVENT / 2 && npolls <= evq->max_polls / 4) {
-	void *p;
-
-	i = (evq->max_polls /= 2);
-	if ((p = realloc(evq->ep_events, i * sizeof(struct epoll_event))))
-	    evq->ep_events = p;
-    }
+	epoll_ctl(evq->epoll_fd, EPOLL_CTL_DEL, ev->fd, NULL);
     return 0;
 }
 
 int
-evq_change (struct event *ev, unsigned int flags)
+evq_modify (struct event *ev, unsigned int flags)
 {
     struct epoll_event epev;
 
@@ -147,35 +124,39 @@ evq_change (struct event *ev, unsigned int flags)
     return epoll_ctl(ev->evq->epoll_fd, EPOLL_CTL_MOD, ev->fd, &epev);
 }
 
-struct event *
+int
 evq_wait (struct event_queue *evq, msec_t timeout)
 {
+    struct epoll_event ep_events[NEVENT];
+    struct epoll_event *epev;
     struct event *ev_ready;
-    struct epoll_event *epev = evq->ep_events;
     int nready;
 
-    timeout = timeout_get(evq->tq, timeout);
+    timeout = timeout_get(evq->tq, timeout, evq->now);
 
     sys_vm_leave();
 
-    nready = epoll_wait(evq->epoll_fd, epev, evq->npolls, (int) timeout);
+    nready = epoll_wait(evq->epoll_fd, ep_events, NEVENT, (int) timeout);
+    evq->now = get_milliseconds();
 
     sys_vm_enter();
 
     if (nready == -1)
-	return (errno == EINTR) ? NULL : EVQ_FAILED;
+	return (errno == EINTR) ? 0 : EVQ_FAILED;
 
     if (timeout != TIMEOUT_INFINITE) {
 	if (!nready) {
-	    ev_ready = evq->tq ? timeout_process(evq->tq, NULL) : NULL;
-	    return ev_ready ? ev_ready : EVQ_TIMEOUT;
+	    ev_ready = !evq->tq ? NULL
+	     : timeout_process(evq->tq, NULL, evq->now);
+	    if (ev_ready) goto end;
+	    return EVQ_TIMEOUT;
 	}
 
-	timeout = get_milliseconds();
+	timeout = evq->now;
     }
 
     ev_ready = NULL;
-    for (; nready--; ++epev) {
+    for (epev = ep_events; nready--; ++epev) {
 	const int revents = epev->events;
 	struct event *ev;
 	unsigned int res;
@@ -214,6 +195,8 @@ evq_wait (struct event_queue *evq, msec_t timeout)
 	ev->next_ready = ev_ready;
 	ev_ready = ev;
     }
-    return ev_ready;
+ end:
+    evq->ev_ready = ev_ready;
+    return 0;
 }
 

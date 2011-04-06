@@ -1,14 +1,14 @@
 /* Lua System: Threading */
 
-#include "../common.h"
-
 #ifdef _WIN32
 
 #include <process.h>
 
 #define thread_getid		GetCurrentThreadId
 
-#define THREAD_FUNC_API		WINAPI
+#define THREAD_FUNC_API		unsigned int WINAPI
+
+typedef unsigned int (WINAPI *thread_func_t) (void *);
 
 typedef unsigned int		thread_id_t;
 typedef DWORD 			thread_key_t;
@@ -20,6 +20,8 @@ typedef DWORD 			thread_key_t;
 #define thread_getid		pthread_self
 
 #define THREAD_FUNC_API		void *
+
+typedef void *(*thread_func_t) (void *);
 
 typedef pthread_t 		thread_id_t;
 typedef pthread_key_t		thread_key_t;
@@ -75,6 +77,9 @@ struct sys_vmthread {
 
 /* Global Thread Local Storage Index */
 static thread_key_t g_TLSIndex = INVALID_TLS_INDEX;
+
+
+static void luaopen_sys_thread (lua_State *L);
 
 
 void
@@ -399,12 +404,12 @@ thread_run (lua_State *L)
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     res = pthread_create(&td->tid, &attr,
-     (void *(*) (void *)) thread_start, td);
+     (thread_func_t) thread_start, td);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
     hThr = (HANDLE) _beginthreadex(NULL, THREAD_STACK_SIZE,
-     thread_start, td, 0, &td->tid);
+     (thread_func_t) thread_start, td, 0, &td->tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif
@@ -450,26 +455,34 @@ thread_startvm (struct sys_thread *td)
 }
 
 static void
-thread_setfield(lua_State *L, const char *name, lua_CFunction f)
+thread_setfield (lua_State *L, const char *name, lua_CFunction f)
 {
     lua_pushcfunction(L, f);
     lua_setfield(L, -2, name);
 }
 
 static void
-thread_openlibs(lua_State *L)
+thread_openlib (lua_State *L, const char *name, lua_CFunction func)
 {
-    lua_cpcall(L, luaopen_base, NULL);
-    lua_cpcall(L, luaopen_package, NULL);
+    lua_pushcfunction(L, func);
+    lua_pushstring(L, name);
+    lua_call(L, 1, 0);
+}
+
+static void
+thread_openlibs (lua_State *L)
+{
+    thread_openlib(L, "", luaopen_base);
+    thread_openlib(L, LUA_LOADLIBNAME, luaopen_package);
 
     lua_getglobal(L, "package");
     lua_getfield(L, -1, "preload");
-    thread_setfield(L, "io", luaopen_io);
-    thread_setfield(L, "os", luaopen_os);
-    thread_setfield(L, "table", luaopen_table);
-    thread_setfield(L, "string", luaopen_string);
-    thread_setfield(L, "math", luaopen_math);
-    thread_setfield(L, "debug", luaopen_debug);
+    thread_setfield(L, LUA_TABLIBNAME, luaopen_table);
+    thread_setfield(L, LUA_IOLIBNAME, luaopen_io);
+    thread_setfield(L, LUA_OSLIBNAME, luaopen_os);
+    thread_setfield(L, LUA_STRLIBNAME, luaopen_string);
+    thread_setfield(L, LUA_MATHLIBNAME, luaopen_math);
+    thread_setfield(L, LUA_DBLIBNAME, luaopen_debug);
     lua_pop(L, 2);
 
     luaopen_sys_thread(L);  /* create table of threads */
@@ -495,13 +508,13 @@ thread_runvm (lua_State *L)
 
     if (!vmtd) luaL_argerror(L, 0, "Threading not initialized");
 
-    NL = lua_open();
+    NL = luaL_newstate();
     if (!NL) goto err;
 
     thread_openlibs(NL);
 
     if (path[0] == LUA_SIGNATURE[0]
-     ? luaL_loadbuffer(NL, path, lua_strlen(L, 1), "thread")
+     ? luaL_loadbuffer(NL, path, lua_rawlen(L, 1), "thread")
      : luaL_loadfile(NL, path)) {
 	lua_pushstring(L, lua_tostring(NL, -1));  /* error message */
 	lua_close(NL);
@@ -529,34 +542,35 @@ thread_runvm (lua_State *L)
 		lua_pushlightuserdata(NL, lua_touserdata(L, i));
 		break;
 	    default:
-		luaL_argerror(L, i, "Primitive type expected");
+		luaL_argerror(L, i, "primitive type expected");
 	    }
 	}
     }
 
     if (vmthread_new(NL, &vmtd))
-	goto err;
+	goto err_clean;
 
 #ifndef _WIN32
     res = pthread_attr_init(&attr);
-    if (res) goto err;
+    if (res) goto err_clean;
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     res = pthread_create(&vmtd->td.tid, &attr,
-     (void *(*) (void *)) thread_startvm, vmtd);
+     (thread_func_t) thread_startvm, vmtd);
     pthread_attr_destroy(&attr);
     if (!res) {
 #else
     hThr = (HANDLE) _beginthreadex(NULL, 0,
-     thread_startvm, vmtd, 0, &vmtd->td.tid);
+     (thread_func_t) thread_startvm, vmtd, 0, &vmtd->td.tid);
     if (hThr) {
 	CloseHandle(hThr);
 #endif
 	lua_pushlightuserdata(L, vmtd);
 	return 1;
     }
+ err_clean:
+    lua_close(NL);
  err:
-    if (NL) lua_close(NL);
     return sys_seterror(L, res);
 }
 
@@ -653,7 +667,7 @@ thread_get_trigger (lua_State *L, struct sys_vmthread **vmtdp)
 #include "thread_msg.c"
 
 
-static luaL_reg thrlib[] = {
+static luaL_reg thread_lib[] = {
     {"init",		thread_init},
     {"run",		thread_run},
     {"runvm",		thread_runvm},
@@ -668,7 +682,8 @@ static luaL_reg thrlib[] = {
     {NULL, NULL}
 };
 
-void
+
+static void
 luaopen_sys_thread (lua_State *L)
 {
     luaL_newmetatable(L, DPOOL_TYPENAME);
@@ -687,7 +702,7 @@ luaopen_sys_thread (lua_State *L)
     lua_rawset(L, -3);
     lua_rawset(L, LUA_REGISTRYINDEX);
 
-    luaL_register(L, "sys.thread", thrlib);
+    luaL_register(L, "sys.thread", thread_lib);
     lua_pushcfunction(L, (lua_CFunction) thread_get_trigger);
     lua_setfield(L, -2, SYS_TRIGGER_TAG);
     lua_pop(L, 1);

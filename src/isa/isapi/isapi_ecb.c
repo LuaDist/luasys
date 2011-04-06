@@ -91,7 +91,7 @@ ecb_read (lua_State *L)
     } while ((n != 0L && nr == (int) rlen)  /* until end of count or eof */
      && sys_buffer_write_next(L, &sb, buf, 0));
     if (nr <= 0 && len == n) {
-	if (!nr || SYS_ERRNO != EAGAIN) goto err;
+	if (!nr || !SYS_EAGAIN(SYS_ERRNO)) goto err;
 	lua_pushboolean(L, 0);
     } else {
 	if (!sys_buffer_write_done(L, &sb, buf, nr))
@@ -143,7 +143,7 @@ ecb_write (lua_State *L)
 	}
 	sys_vm_enter();
 	if (nw == -1) {
-	    if (n > 0 || SYS_ERRNO == EAGAIN) break;
+	    if (n > 0 || SYS_EAGAIN(SYS_ERRNO)) break;
 	    return sys_seterror(L, 0);
 	}
 	n += nw;
@@ -203,6 +203,6 @@ static luaL_reg ecb_meth[] = {
     {"read",		ecb_read},
     {"write",		ecb_write},
     {"header",		ecb_header},
-    {SYS_BUFIO_META,	NULL},  /* can operate with buffers */
+    {SYS_BUFIO_TAG,	NULL},  /* can operate with buffers */
     {NULL, NULL}
 };

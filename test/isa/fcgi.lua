@@ -4,9 +4,8 @@
 
 local sys = require("sys")
 local sock = require("sys.sock")
-local fcgi = require("sys.fcgi")
 
-local fcgi_decode, fcgi_encode = fcgi.decode, fcgi.encode
+local fcgi_decode, fcgi_encode = sys.fcgi_decode, sys.fcgi_encode
 
 sys.thread.init()
 
@@ -118,7 +117,7 @@ end
 local channels = {}
 do
     -- Pool of free channels
-    local pool = {__mode = "v", n = 0}
+    local pool = setmetatable({n = 0}, {__mode = "v"})
 
     local function pool_get()
 	local n = pool.n
@@ -174,7 +173,6 @@ do
 
     -- Directory changed
     local function on_change(evq, evid, dir)
-print(dir)
 	evq:del(evid)
 	dirs[dir] = nil
     end
@@ -277,7 +275,7 @@ local function accept(evq, evid, fd)
     --fd:nonblocking(true)
     --fd:sockopt("tcp_nodelay", 1)
 
-    evid = evq:add(fd, 'r', process)
+    evid = evq:add_socket(fd, 'r', process)
     if not evid then
 	fd:close()
 	channels.put(channel)
@@ -289,14 +287,15 @@ local function accept(evq, evid, fd)
 end
 
 
+local saddr = sock.addr()
 for port, host in pairs(bind) do
     local fd = sock.handle()
     assert(fd:socket())
     assert(fd:sockopt("reuseaddr", 1))
-    local addr = sock.inet_aton(host)
-    assert(fd:bind(sock.addr_in(port, addr)))
+    assert(saddr:inet(port, sock.inet_pton(host)))
+    assert(fd:bind(saddr))
     assert(fd:listen())
-    assert(evq:add(fd, 'r', accept))
+    assert(evq:add_socket(fd, 'r', accept))
 end
 
 -- Quit by Ctrl-C

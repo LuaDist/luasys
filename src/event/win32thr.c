@@ -1,4 +1,4 @@
-/* Win32 Polling Threads */
+/* Win32 Threads with WaitForMultipleObjects */
 
 struct win32thr_arg {
     struct event_queue *evq;
@@ -42,7 +42,7 @@ win32thr_poll (struct event_queue *evq)
     evq->nwakeup = 0;
 
     EnterCriticalSection(&evq->head.cs);
-    do {
+    while (wth) {
 	CRITICAL_SECTION *wth_cs = &wth->cs;
 	int sleeping;
 
@@ -72,7 +72,7 @@ win32thr_poll (struct event_queue *evq)
 	    SetEvent(signal);
 	}
 	wth = wth->next;
-    } while (wth);
+    }
     LeaveCriticalSection(&evq->head.cs);
 
     /* wait of starting of all polling threads */
@@ -82,7 +82,7 @@ win32thr_poll (struct event_queue *evq)
     return changed;
 }
 
-static WINAPI
+static DWORD WINAPI
 win32thr_wait (struct event_queue *evq)
 {
     CRITICAL_SECTION *head_cs;
@@ -103,18 +103,20 @@ win32thr_wait (struct event_queue *evq)
     SetEvent(evq->ack_event);
 
     for (; ; ) {
+	msec_t now;
 	unsigned int res, n;
 
 	WaitForSingleObject(wth.signal, INFINITE);
 	if (!(n = wth.n)) break;
 
 	EnterCriticalSection(head_cs);
+	now = evq->now;
 	if (--evq->nwakeup == 0)
 	    SetEvent(evq->ack_event);  /* wake up poller */
 	LeaveCriticalSection(head_cs);
 
 	res = WaitForMultipleObjects(n + 1, wth.handles, FALSE,
-	 timeout_get(wth.tq, INFINITE));
+	 timeout_get(wth.tq, INFINITE, now));
 	wth.idx = res;
 	res = (res == WAIT_TIMEOUT) || (res < (WAIT_OBJECT_0 + n));
 
@@ -128,8 +130,8 @@ win32thr_wait (struct event_queue *evq)
 
 	if (res) {
 	    EnterCriticalSection(head_cs);
-	    wth.next_ready = evq->ready;
-	    evq->ready = &wth;
+	    wth.next_ready = evq->wth_ready;
+	    evq->wth_ready = &wth;
 	    SetEvent(head_signal);
 	    LeaveCriticalSection(head_cs);
 	}
@@ -151,7 +153,8 @@ win32thr_init (struct event_queue *evq)
     if (arg.signal == NULL)
 	return NULL;
 
-    hThr = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) win32thr_wait, &arg, 0, &id);
+    hThr = CreateThread(NULL, 4096,
+     (LPTHREAD_START_ROUTINE) win32thr_wait, &arg, 0, &id);
     if (hThr == NULL) {
 	CloseHandle(arg.signal);
 	return NULL;
@@ -172,7 +175,7 @@ win32thr_add (struct win32thr *wth, struct event *ev)
 
     ev->wth = wth;
 
-    if (ev->flags & EVENT_NOTSOCK)
+    if (!(ev->flags & EVENT_SOCKET))
 	hEvent = ev->fd;
     else {
 	const unsigned int ev_flags = ev->flags;
@@ -183,9 +186,9 @@ win32thr_add (struct win32thr *wth, struct event *ev)
 
 	res = 0;
 	if (ev_flags & EVENT_READ)
-	    res = (ev_flags & EVENT_ACCEPT) ? FD_ACCEPT : WFD_READ;
+	    res = (ev_flags & EVENT_SOCKET_ACC_CONN) ? FD_ACCEPT : WFD_READ;
 	if (ev_flags & EVENT_WRITE)
-	    res |= WFD_WRITE;
+	    res |= (ev_flags & EVENT_SOCKET_ACC_CONN) ? FD_CONNECT : WFD_WRITE;
 
 	if (WSAEventSelect((int) ev->fd, hEvent, res) == SOCKET_ERROR) {
 	    CloseHandle(hEvent);
@@ -208,14 +211,13 @@ win32thr_del (struct win32thr *wth, struct event *ev)
 {
     int i, n = --wth->n;
 
+    if (ev->tq) timeout_del(ev);
+
     ev->wth = NULL;
     wth->evq->nevents--;
 
-    if (ev->tq)
-	timeout_del(&wth->tq, ev);
-
     i = ev->index;
-    if (!(ev->flags & EVENT_NOTSOCK)) {
+    if (ev->flags & EVENT_SOCKET) {
 	HANDLE hEvent = wth->handles[i];
 	WSAEventSelect((int) ev->fd, hEvent, 0);
 	CloseHandle(hEvent);

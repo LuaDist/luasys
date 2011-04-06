@@ -14,10 +14,10 @@ static int
 sys_random (lua_State *L)
 {
 #ifndef _WIN32
-    fd_t fd = open("/dev/urandom", O_RDONLY, 0);
+    fd_t *fdp = lua_newuserdata(L, sizeof(fd_t));
 
-    if (fd != (fd_t) -1) {
-	lua_boxinteger(L, fd);
+    *fdp = open("/dev/urandom", O_RDONLY, 0);
+    if (*fdp != (fd_t) -1) {
 #else
     HCRYPTPROV *p = lua_newuserdata(L, sizeof(void *));
 
@@ -55,7 +55,7 @@ rand_close (lua_State *L)
 static int
 rand_next (lua_State *L)
 {
-    unsigned long num, ub = (unsigned long) lua_tointeger(L, 2);
+    unsigned int num, ub = lua_tointeger(L, 2);
 #ifndef _WIN32
     fd_t fd = (fd_t) lua_unboxinteger(L, 1, RAND_TYPENAME);
     int nr;
@@ -74,6 +74,9 @@ rand_next (lua_State *L)
     return sys_seterror(L, 0);
 }
 
+
+#define RAND_METHODS \
+    {"random",		sys_random}
 
 static luaL_reg rand_meth[] = {
     {"__call",		rand_next},

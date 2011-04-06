@@ -1,11 +1,20 @@
 /* Lua System: File I/O: Serial communication */
 
 #ifdef _WIN32
+
 #define TCIFLUSH	(PURGE_RXABORT | PURGE_RXCLEAR)
 #define TCOFLUSH	(PURGE_TXABORT | PURGE_TXCLEAR)
 #define TCIOFLUSH	(TCIFLUSH | TCOFLUSH)
+
+#define TIOCM_CAR	EV_RLSD
+#define TIOCM_CTS	EV_CTS
+#define TIOCM_DSR	EV_DSR
+#define TIOCM_RNG	EV_RING
+
 #else
+
 #include <termios.h>
+
 #endif
 
 
@@ -20,7 +29,7 @@
  * Returns: [fd_udata]
  */
 static int
-sys_comm_init (lua_State *L)
+comm_init (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
@@ -60,7 +69,7 @@ sys_comm_init (lua_State *L)
 #endif
 	} else {
 	    const char *opt = lua_tostring(L, i);
-	    const char *endp = opt + lua_strlen(L, i) - 1;
+	    const char *endp = opt + lua_rawlen(L, i) - 1;
 
 	    if (!opt) continue;
 	    switch (*opt) {
@@ -167,7 +176,7 @@ sys_comm_init (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_control (lua_State *L)
+comm_control (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int nargs = lua_gettop(L);
@@ -233,7 +242,7 @@ sys_comm_control (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_timeout (lua_State *L)
+comm_timeout (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rtime = lua_tointeger(L, 2);
@@ -270,9 +279,11 @@ sys_comm_timeout (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_queues (lua_State *L)
+comm_queues (lua_State *L)
 {
-#ifdef _WIN32
+#ifndef _WIN32
+    if (1) {
+#else
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const int rqueue = lua_tointeger(L, 2);
     const int wqueue = lua_tointeger(L, 3);
@@ -281,8 +292,8 @@ sys_comm_queues (lua_State *L)
 #endif
 	lua_settop(L, 1);
 	return 1;
-#ifdef _WIN32
     }
+#ifdef _WIN32
     return sys_seterror(L, 0);
 #endif
 }
@@ -292,7 +303,7 @@ sys_comm_queues (lua_State *L)
  * Returns: [fd_udata]
  */
 static int
-sys_comm_purge (lua_State *L)
+comm_purge (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
     const char *mode = lua_tostring(L, 2);
@@ -315,37 +326,70 @@ sys_comm_purge (lua_State *L)
     return sys_seterror(L, 0);
 }
 
-
-#if 0  /* TODO: Integrate to event/win32 */
 /*
- * Arguments: fd_udata, [mode (string: "r", "w", "rw")]
- * Returns: read (boolean), write (boolean), timeout (boolean)
+ * Arguments: fd_udata, options (string: "car", "cts", "dsr", "ring") ...
+ * Returns: [boolean ...]
  */
 static int
-sys_comm_wait (lua_State *L)
+comm_wait (lua_State *L)
 {
     const fd_t fd = (fd_t) lua_unboxinteger(L, 1, FD_TYPENAME);
-    const char *mode = lua_tostring(L, 2);
-    int flags;
+    const int nargs = lua_gettop(L);
+    unsigned long status;
+    int flags = 0;
+    int i, res;
 
-#ifndef _WIN32
-    if (0) {
-#else
-    flags = EV_RXCHAR;
-    if (mode)
-	switch (mode[0]) {
-	case 'w': flags = EV_TXEMPTY; break;
-	case 'r': if (mode[1] == 'w') flags |= EV_TXEMPTY;
+    for (i = 2; i <= nargs; ++i) {
+	const char *s = lua_tostring(L, i);
+
+	if (!s) continue;
+	switch (*s) {
+	case 'c':  /* CAR/CTS */
+	    flags |= (s[1] == 'a') ? TIOCM_CAR : TIOCM_CTS;
+	    break;
+	case 'd':  /* DSR */
+	    flags |= TIOCM_DSR;
+	    break;
+	case 'r':  /* RING */
+	    flags |= TIOCM_RNG;
+	    break;
 	}
+    }
 
-    if (SetCommMask(fd, flags) && WaitCommEvent(fd, &flags, NULL)) {
-	lua_pushboolean(L, flags & EV_RXCHAR);
-	lua_pushboolean(L, flags & EV_TXEMPTY);
-	lua_pushboolean(L, !flags);
+    sys_vm_leave();
+#ifndef _WIN32
+    do {
+#ifdef TIOCMIWAIT
+	res = !(ioctl(fd, TIOCMIWAIT, flags) || ioctl(fd, TIOCMGET, &status));
+#else
+	while ((res = !ioctl(fd, TIOCMGET, &status)) && !(status & flags))
+	    usleep(10000);  /* 10 msec polling */
 #endif
-	return 3;
+    } while (!res && SYS_ERRNO == EINTR);
+#else
+    res = SetCommMask(fd, flags) && WaitCommEvent(fd, &status, NULL);
+#endif
+    sys_vm_enter();
+
+    if (res) {
+	if (flags & TIOCM_CAR)
+	    lua_pushboolean(L, status & TIOCM_CAR);
+	if (flags & TIOCM_CTS)
+	    lua_pushboolean(L, status & TIOCM_CTS);
+	if (flags & TIOCM_DSR)
+	    lua_pushboolean(L, status & TIOCM_DSR);
+	if (flags & TIOCM_RNG)
+	    lua_pushboolean(L, status & TIOCM_RNG);
+	return nargs - 1;
     }
     return sys_seterror(L, 0);
 }
-#endif
 
+
+#define COMM_METHODS \
+    {"comm_init",	comm_init}, \
+    {"comm_control",	comm_control}, \
+    {"comm_timeout",	comm_timeout}, \
+    {"comm_queues",	comm_queues}, \
+    {"comm_purge",	comm_purge}, \
+    {"comm_wait",	comm_wait}

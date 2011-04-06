@@ -11,8 +11,12 @@ local fd = sock.handle()
 assert(fd:socket("dgram"))
 
 assert(fd:sockopt("reuseaddr", 1))
-assert(fd:bind(sock.addr_in(MCAST_PORT + 1)))
 
-local addr = sock.addr_in(MCAST_PORT, MCAST_ADDR)
+local saddr = sock.addr():inet(MCAST_PORT + 1)
+assert(fd:bind(saddr))
 
-assert(fd:send(sys.stdin:read(13), addr))
+sys.stdout:write("Enter text: ")
+local line = sys.stdin:read()
+
+saddr:inet(MCAST_PORT, sock.inet_pton(MCAST_ADDR))
+assert(fd:send(line, saddr))

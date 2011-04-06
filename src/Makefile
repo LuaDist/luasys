@@ -1,7 +1,10 @@
 
+PLAT= none
+
 LUA= /tmp/lua-5.1.4
 
 T= /usr/local/lib/lua/5.1/sys.so
+A= $(LUA)/src/libluasys.a
 
 COPT= -O2 -fPIC -DNDEBUG
 CWARNS = -W -Wall -Wextra -pedantic \
@@ -22,47 +25,71 @@ CWARNS = -W -Wall -Wextra -pedantic \
 #	-Wunreachable-code
 
 CFLAGS= $(COPT) $(CWARNS) $(MYCFLAGS) -I$(LUA)/src
-LIBS= -lpthread
+LIBS= -lpthread $(MYLIBS)
 
 MYCFLAGS=
 MYLDFLAGS= -shared -Bdynamic
+MYLIBS=
 
-CC= /usr/bin/gcc
-MAKE_DLL= /usr/bin/ld $(MYLDFLAGS) -o
-STRIP= /usr/bin/strip
+CC= gcc
+MAKE_DLL= ld $(MYLDFLAGS) -o
+AR= ar rcu
+RANLIB= ranlib
 RM= rm -f
+STRIP= strip
 
-OBJS= luasys.o thread/sys_thread.o sock/sys_sock.o mem/sys_mem.o \
-    event/evq.o event/timeout.o isa/fcgi/sys_fcgi.o
+PLATS= generic linux bsd osx
+
+OBJS= luasys.o sock/sys_sock.o
 LDOBJS= $(OBJS)
 
-all: $(T)
+
+default: $(PLAT)
+
+all:	$(T)
+
+a:	$(A)
 
 $(T): $(OBJS)
 	$(MAKE_DLL) $@ $(LDOBJS) $(LIBS)
 	$(STRIP) $@
+
+$(A): $(OBJS)
+	$(AR) $@ $?
+	$(RANLIB) $@
+
+
+none:
+	@echo "Please choose a platform:"
+	@echo "	$(PLATS)"
+
+generic:
+	$(MAKE) all MYCFLAGS=
+
+linux:
+	$(MAKE) all MYCFLAGS="-DUSE_EPOLL" MYLIBS="-lrt"
 
 bsd:
 	$(MAKE) all MYCFLAGS="-DUSE_KQUEUE" LDOBJS="*.o"
 
 osx:
 	$(MAKE) all MYCFLAGS="-DUSE_KQUEUE" STRIP="echo strip" \
-	MYLDFLAGS="-bundle -undefined dynamic_lookup"
+	MYLDFLAGS="-bundle -undefined dynamic_lookup /usr/lib/bundle1.o"
 
 clean:
-	$(RM) $(T) *.o */*.o */*/*.o
+	$(RM) $(T) *.o */*.o
 
 
-luasys.o: sys_comm.c sys_date.c sys_env.c sys_evq.c sys_file.c sys_fs.c \
-    sys_proc.c sys_rand.c sys_unix.c \
-    common.h event/evq.h event/timeout.h
-thread/sys_thread.o: thread/sys_thread.c thread/thread_dpool.c \
-    thread/thread_msg.c thread/thread_sync.c common.h
+.PHONY: all $(PLATS) default a clean
+
+
+luasys.o: luasys.c sys_comm.c sys_date.c sys_env.c sys_evq.c sys_file.c \
+    sys_fs.c sys_log.c sys_proc.c sys_rand.c sys_unix.c common.h \
+    thread/sys_thread.c thread/thread_dpool.c \
+    thread/thread_msg.c thread/thread_sync.c \
+    mem/sys_mem.c mem/membuf.c \
+    event/evq.c event/epoll.c event/kqueue.c event/poll.c \
+    event/select.c event/signal.c event/timeout.c \
+    event/evq.h event/epoll.h event/kqueue.h event/poll.h \
+    event/select.h event/timeout.h
 sock/sys_sock.o: sock/sys_sock.c common.h
-mem/sys_mem.o: mem/sys_mem.c mem/membuf.c common.h
-event/evq.o: event/evq.c event/epoll.c event/kqueue.c event/poll.c \
-    event/select.c event/signal.c \
-    event/epoll.h event/kqueue.h event/poll.h event/select.h \
-    common.h event/evq.h event/timeout.h
-event/timeout.o: event/timeout.c common.h event/evq.h event/timeout.h
-isa/fcgi/sys_fcgi.o: isa/fcgi/sys_fcgi.c common.h

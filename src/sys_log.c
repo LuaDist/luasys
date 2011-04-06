@@ -28,20 +28,46 @@ struct sys_log {
 
 
 /*
- * Arguments: ident (string)
+ * Arguments: [ident (string)]
  * Returns: [log_udata]
  */
 static int
 sys_log (lua_State *L)
 {
-    const char *ident = luaL_checkstring(L, 1);
+    const char *ident = luaL_optstring(L, 1, "lua");
     struct sys_log *logp = lua_newuserdata(L, sizeof(struct sys_log));
 
 #ifndef _WIN32
     openlog(ident, LOG_CONS, LOG_USER);
     {
 #else
-    logp->h = OpenEventLog(NULL, ident);
+    /* register the event source */
+    {
+	HKEY app_hk = NULL, ident_hk = NULL;
+	DWORD opt;
+
+	RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+	 "System\\CurrentControlSet\\Services\\EventLog\\Application",
+	 0, KEY_WRITE, &app_hk);
+
+	RegCreateKeyExA(app_hk, ident,
+	 0, NULL, 0, KEY_WRITE, NULL, &ident_hk, &opt);
+
+	if (ident_hk && opt == REG_CREATED_NEW_KEY) {
+	    RegSetValueExA(ident_hk, "EventMessageFile",
+	     0, REG_EXPAND_SZ,
+	     (const unsigned char *) "%SystemRoot%\\System32\\netmsg.dll",
+	     sizeof("%SystemRoot%\\System32\\netmsg.dll"));
+
+	    opt = 1;
+	    RegSetValueExA(ident_hk, "TypesSupported",
+	     0, REG_DWORD, (unsigned char *) &opt, sizeof(DWORD));
+	}
+	RegCloseKey(ident_hk);
+	RegCloseKey(app_hk);
+    }
+
+    logp->h = OpenEventLogA(NULL, ident);
     if (logp->h) {
 #endif
 	logp->type = LOG_TERROR;
@@ -91,9 +117,7 @@ log_type (lua_State *L)
 	}
 	logp->type = t;
     }
-    lua_getmetatable(L, 1);
-    lua_getfield(L, -1, "__call");
-    return 1;
+    return luaL_getmetafield(L, 1, "__call");
 }
 
 /*
@@ -107,15 +131,32 @@ log_report (lua_State *L)
     const char *msg = luaL_checkstring(L, 2);
 
 #ifndef _WIN32
+    sys_vm_leave();
     syslog(logp->type, "%s", msg);
+    sys_vm_enter();
 #else
-    ReportEvent(logp->h, (short) logp->type,
-     0, 0, NULL, 1, 0, &msg, NULL);
+    WCHAR *buf[9];
+
+    memset(buf, 0, sizeof(buf));
+    buf[0] = utf8_to_filename(msg);
+    if (!buf[0])
+	return sys_seterror(L, ERROR_NOT_ENOUGH_MEMORY);
+
+    sys_vm_leave();
+    ReportEventW(logp->h, (short) logp->type,
+     0, 3299, NULL, sizeof(buf) / sizeof(buf[0]), 0,
+     (const WCHAR **) buf, NULL);
+    sys_vm_enter();
+
+    free(buf[0]);
 #endif
     lua_settop(L, 1);
     return 1;
 }
 
+
+#define LOG_METHODS \
+    {"log",		sys_log}
 
 static luaL_reg log_meth[] = {
     {"__index",		log_type},

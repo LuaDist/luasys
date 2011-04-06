@@ -4,14 +4,14 @@ local sys = require"sys"
 local sock = require"sys.sock"
 
 
-local file = "/tmp/test_sock_lua"
+local path = "/tmp/test_sock_lua"
 
 local fd = sock.handle()
 assert(fd:socket("dgram", "unix"))
 
-local addr = assert(sock.addr_un(file))
-assert(fd:bind(addr))
+local saddr = assert(sock.addr():file(path))
+assert(fd:bind(saddr))
 
 print(fd:recv(13))
 
-sys.remove(file)
+sys.remove(path)

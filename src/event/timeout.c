@@ -1,78 +1,32 @@
-/* Timeouts (Timers) */
+/* Timeouts */
 
-#include "../common.h"
-
-#include "evq.h"
-
-/*
- * Timer values are spread in small range (usually several minutes) and overflow each 49.7 days.
- * The comparison has to take into account that overflow.
- */
-
-
-int
-timeout_add (struct timeout_queue **headp, struct event *ev, msec_t msec)
+static void
+timeout_reset (struct event *ev, msec_t now)
 {
-    const msec_t now = get_milliseconds();
-    struct timeout_queue *tq, *tq_prev;
+    struct timeout_queue *tq = ev->tq;
+    const msec_t msec = tq->msec;
 
-    if (ev->tq) {
-	if (ev->tq->msec == msec) {
-	    timeout_reset(ev, now);
-	    return 0;
-	}
-	timeout_del(headp, ev);
-    }
+    if (msec == TIMEOUT_INFINITE)
+	return;
 
-    tq_prev = NULL;
-    for (tq = *headp; tq && tq->msec < msec; tq = tq->next)
-	tq_prev = tq;
+    ev->timeout_at = msec + now;
+    if (!ev->next)
+	return;
 
-    if (!tq || tq->msec != msec) {
-	struct timeout_queue *tq_new;
+    if (ev->prev)
+	ev->prev->next = ev->next;
+    else
+	tq->ev_head = ev->next;
 
-	tq_new = malloc(sizeof(struct timeout_queue));
-	if (!tq_new) return -1;
-
-	tq_new->msec = msec;
-	tq_new->next = tq;
-	tq = tq_new;
-
-	if (tq_prev)
-	    tq_prev->next = tq;
-	else
-	    *headp = tq;
-
-	tq->event_head = ev;
-	ev->prev = NULL;
-    } else {
-	ev->prev = tq->event_tail;
-	tq->event_tail->next = ev;
-    }
-    tq->event_tail = ev;
+    ev->next->prev = ev->prev;
     ev->next = NULL;
-    ev->tq = tq;
-    ev->timeout = msec + now;
-    return 0;
+    ev->prev = tq->ev_tail;
+    tq->ev_tail->next = ev;
+    tq->ev_tail = ev;
 }
 
 static void
-timeout_destroy (struct timeout_queue **headp, struct timeout_queue *tq)
-{
-    struct timeout_queue *head = *headp;
-
-    if (head == tq)
-	*headp = tq->next;
-    else {
-	while (head->next != tq)
-	    head = head->next;
-	head->next = tq->next;
-    }
-    free(tq);
-}
-
-void
-timeout_del (struct timeout_queue **headp, struct event *ev)
+timeout_del (struct event *ev)
 {
     struct timeout_queue *tq = ev->tq;
     struct event *ev_prev, *ev_next;
@@ -83,57 +37,86 @@ timeout_del (struct timeout_queue **headp, struct event *ev)
     ev_prev = ev->prev;
     ev_next = ev->next;
 
-    /* empty queue */
     if (!ev_prev && !ev_next) {
-	timeout_destroy(headp, tq);
+	struct timeout_queue **tq_headp = &event_get_tq_head(ev);
+	struct event **ev_freep = &event_get_evq(ev)->ev_free;
+	struct timeout_queue *tq_prev = tq->tq_prev;
+	struct timeout_queue *tq_next = tq->tq_next;
+
+	if (tq_prev)
+	    tq_prev->tq_next = tq_next;
+	else
+	    *tq_headp = tq_next;
+
+	if (tq_next)
+	    tq_next->tq_prev = tq_prev;
+
+	((struct event *) tq)->next_ready = *ev_freep;
+	*ev_freep = ((struct event *) tq);
 	return;
     }
 
     if (ev_prev)
 	ev_prev->next = ev_next;
     else
-	tq->event_head = ev_next;
+	tq->ev_head = ev_next;
 
     if (ev_next)
 	ev_next->prev = ev_prev;
     else
-	tq->event_tail = ev_prev;
+	tq->ev_tail = ev_prev;
 }
 
-void
-timeout_reset (struct event *ev, msec_t now)
+static int
+timeout_add (struct event *ev, msec_t msec, msec_t now)
 {
-    struct timeout_queue *tq = ev->tq;
-    const msec_t msec = tq->msec;
+    struct timeout_queue **tq_headp = &event_get_tq_head(ev);
+    struct timeout_queue *tq, *tq_prev;
 
-    if (msec == TIMEOUT_INFINITE)
-	return;
+    tq_prev = NULL;
+    for (tq = *tq_headp; tq && tq->msec < msec; tq = tq->tq_next)
+	tq_prev = tq;
 
-    ev->timeout = msec + now;
-    if (!ev->next)
-	return;
+    if (!tq || tq->msec != msec) {
+	struct event **ev_freep = &event_get_evq(ev)->ev_free;
+	struct timeout_queue *tq_new = (struct timeout_queue *) *ev_freep;
 
-    if (ev->prev)
-	ev->prev->next = ev->next;
-    else
-	tq->event_head = ev->next;
+	if (!tq_new) return -1;
+	*ev_freep = (*ev_freep)->next_ready;
 
-    ev->next->prev = ev->prev;
+	tq_new->tq_next = tq;
+	if (tq) tq->tq_prev = tq_new;
+	tq = tq_new;
+	tq->tq_prev = tq_prev;
+
+	if (tq_prev)
+	    tq_prev->tq_next = tq;
+	else
+	    *tq_headp = tq;
+
+	tq->msec = msec;
+	tq->ev_head = ev;
+	ev->prev = NULL;
+    } else {
+	ev->prev = tq->ev_tail;
+	if (tq->ev_tail)
+	    tq->ev_tail->next = ev;
+	else
+	    tq->ev_head = ev;
+    }
+    tq->ev_tail = ev;
     ev->next = NULL;
-    ev->prev = tq->event_tail;
-    tq->event_tail->next = ev;
-    tq->event_tail = ev;
+    ev->tq = tq;
+    ev->timeout_at = msec + now;
+    return 0;
 }
 
-msec_t
-timeout_get (const struct timeout_queue *tq, msec_t min)
+static msec_t
+timeout_get (const struct timeout_queue *tq, msec_t min, msec_t now)
 {
-    msec_t now;
     int is_infinite = 0;
 
     if (!tq) return min;
-
-    now = get_milliseconds();
 
     if (min == TIMEOUT_INFINITE)
 	is_infinite = 1;
@@ -142,14 +125,14 @@ timeout_get (const struct timeout_queue *tq, msec_t min)
 
     do {
 	if (tq->msec != TIMEOUT_INFINITE) {
-	    const msec_t t = tq->event_head->timeout;
+	    const msec_t t = tq->ev_head->timeout_at;
 	    if (is_infinite) {
 		is_infinite = 0;
 		min = t;
 	    } else if ((long) t < (long) min)
 		min = t;
 	}
-	tq = tq->next;
+	tq = tq->tq_next;
     } while (tq);
 
     if (is_infinite)
@@ -160,21 +143,20 @@ timeout_get (const struct timeout_queue *tq, msec_t min)
     }
 }
 
-struct event *
-timeout_process (struct timeout_queue *tq, struct event *ev_ready)
+static struct event *
+timeout_process (struct timeout_queue *tq, struct event *ev_ready, msec_t now)
 {
-    msec_t now = get_milliseconds();
-    long timeout = (long) now + MIN_TIMEOUT;
-    struct event *ev;
+    long timeout_at = (long) now + MIN_TIMEOUT;
 
-    while (tq && tq->msec != TIMEOUT_INFINITE) {
-	struct event *ev_head = tq->event_head;
+    while (tq) {
+	struct event *ev_head = tq->ev_head;
 
 	if (ev_head) {
-	    ev = ev_head;
-	    while ((long) ev->timeout <= timeout) {
+	    struct event *ev = ev_head;
+
+	    while ((long) ev->timeout_at <= timeout_at) {
 		ev->flags |= EVENT_ACTIVE | EVENT_TIMEOUT_RES;
-		ev->timeout = tq->msec + now;
+		ev->timeout_at = tq->msec + now;
 
 		ev->next_ready = ev_ready;
 		ev_ready = ev;
@@ -183,15 +165,15 @@ timeout_process (struct timeout_queue *tq, struct event *ev_ready)
 	    }
 	    if (ev && ev != ev_head) {
 		/* recycle timeout queue */
-		tq->event_head = ev;  /* head */
+		tq->ev_head = ev;  /* head */
 		ev->prev = NULL;
-		tq->event_tail->next = ev_head;  /* middle */
-		ev_head->prev = tq->event_tail;
-		tq->event_tail = ev_ready;  /* tail */
+		tq->ev_tail->next = ev_head;  /* middle */
+		ev_head->prev = tq->ev_tail;
+		tq->ev_tail = ev_ready;  /* tail */
 		ev_ready->next = NULL;
 	    }
 	}
-	tq = tq->next;
+	tq = tq->tq_next;
     }
     return ev_ready;
 }

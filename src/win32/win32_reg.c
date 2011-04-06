@@ -1,7 +1,5 @@
 /* Lua System: Win32 specifics: Registry */
 
-#include "../common.h"
-
 #define WREG_TYPENAME	"sys.win32.registry"
 
 #define REG_KEY_SZ	256
@@ -71,7 +69,7 @@ reg_open (lua_State *L)
     REGSAM desired = reg_mode2sam(L, 4);
     int res;
 
-    res = RegOpenKeyEx(hk, subkey, 0, desired, hkp);
+    res = RegOpenKeyExA(hk, subkey, 0, desired, hkp);
     if (!res) {
 	lua_settop(L, 1);
 	return 1;
@@ -97,7 +95,7 @@ reg_create (lua_State *L)
     REGSAM desired = reg_mode2sam(L, 6);
     int res;
 
-    res = RegCreateKeyEx(hk, subkey, 0, class, opt, desired, NULL, hkp, &opt);
+    res = RegCreateKeyExA(hk, subkey, 0, class, opt, desired, NULL, hkp, &opt);
     if (!res) {
 	lua_settop(L, 1);
 	lua_pushboolean(L, opt == REG_OPENED_EXISTING_KEY);
@@ -133,7 +131,7 @@ reg_del_key (lua_State *L)
     const char *subkey = luaL_checkstring(L, 2);
     int res;
 
-    res = RegDeleteKey(hk, subkey);
+    res = RegDeleteKeyA(hk, subkey);
     if (!res) {
 	lua_settop(L, 1);
 	return 1;
@@ -152,7 +150,7 @@ reg_del_value (lua_State *L)
     const char *name = lua_tostring(L, 2);
     int res;
 
-    res = RegDeleteValue(hk, name);
+    res = RegDeleteValueA(hk, name);
     if (!res) {
 	lua_settop(L, 1);
 	return 1;
@@ -178,7 +176,7 @@ reg_keys (lua_State *L)
 	DWORD cname = REG_KEY_SZ, cclass = REG_KEY_SZ;
 	int res;
 
-	res = RegEnumKeyEx(hk, i, name, &cname, 0, class, &cclass, NULL);
+	res = RegEnumKeyExA(hk, i, name, &cname, 0, class, &cclass, NULL);
 	if (!res) {
 	    lua_pushinteger(L, ++i);  /* next value */
 	    lua_pushlstring(L, name, cname);
@@ -198,7 +196,7 @@ reg_pushvalue (lua_State *L, DWORD type, char *data, DWORD cdata)
     else if (type == REG_EXPAND_SZ) {
 	char buf[REG_DATA_SZ];
 
-	cdata = ExpandEnvironmentStrings(data, buf, sizeof(buf));
+	cdata = ExpandEnvironmentStringsA(data, buf, sizeof(buf));
 	if (!cdata) return 0;
 
 	lua_pushlstring(L, buf, cdata - 1);
@@ -226,7 +224,7 @@ reg_values (lua_State *L)
 	DWORD type;
 	int res;
 
-	res = RegEnumValue(hk, i, name, &cname, NULL, &type,
+	res = RegEnumValueA(hk, i, name, &cname, NULL, &type,
 	 (unsigned char *) data, &cdata);
 	if (!res) {
 	    lua_pushinteger(L, ++i);  /* next value */
@@ -252,7 +250,7 @@ reg_get (lua_State *L)
     DWORD type;
     int res;
 
-    res = RegQueryValueEx(hk, name, NULL, &type,
+    res = RegQueryValueExA(hk, name, NULL, &type,
      (unsigned char *) data, &cdata);
     if (!res && reg_pushvalue(L, type, data, cdata)) {
 	return 1;
@@ -269,22 +267,22 @@ reg_set (lua_State *L)
 {
     HKEY hk = lua_unboxpointer(L, 1, WREG_TYPENAME);
     const char *name = lua_tostring(L, 2);
-    unsigned char *data;
-    int data_num, cdata, type, res;
+    const unsigned char *data;
+    DWORD data_num, cdata, type, res;
 
     if (lua_type(L, 3) == LUA_TSTRING) {
 	size_t len;
 
 	type = REG_SZ;
-	data = (unsigned char *) lua_tolstring(L, 3, &len);
+	data = (const unsigned char *) lua_tolstring(L, 3, &len);
 	cdata = len + 1;  /* + terminating null character */
     } else {
 	type = REG_DWORD;
 	data_num = lua_tointeger(L, 3);
-	data = (unsigned char *) &data_num;
-	cdata = sizeof(int);
+	data = (const unsigned char *) &data_num;
+	cdata = sizeof(DWORD);
     }
-    res = RegSetValueEx(hk, name, 0, type, data, cdata);
+    res = RegSetValueExA(hk, name, 0, type, data, cdata);
     if (!res) {
 	lua_settop(L, 1);
 	return 1;

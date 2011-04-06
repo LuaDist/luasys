@@ -1,8 +1,5 @@
 /* Lua System: Internet Server Application: FastCGI */
 
-#include "../../common.h"
-
-
 #define FCGI_VERSION		1
 
 #define FCGI_HEADER_LEN		8
@@ -355,18 +352,6 @@ fcgi_encode (lua_State *L)
 }
 
 
-static luaL_reg fcgilib[] = {
-    {"encode",		fcgi_encode},
-    {"decode",		fcgi_decode},
-    {NULL, NULL}
-};
-
-
-LUALIB_API int luaopen_sys_fcgi (lua_State *L);
-
-LUALIB_API int
-luaopen_sys_fcgi (lua_State *L)
-{
-    luaL_register(L, "sys.fcgi", fcgilib);
-    return 1;
-}
+#define FCGI_METHODS \
+    {"fcgi_encode",	fcgi_encode}, \
+    {"fcgi_decode",	fcgi_decode}

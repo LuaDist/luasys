@@ -6,16 +6,14 @@ local sock = require("sys.sock")
 
 print"-- sys.handle <-> io.file"
 do
+    local file = assert(io.open("test", "w"))
     local fd = sys.handle()
-    assert(fd:create("test", 384))
+    fd:fileno(file)
     assert(fd:write"fd <")
-
-    local file = fd:to_file"w"
+    assert(fd:fdopen(file, "w"))
     assert(file:write"> file")
     file:flush()
-
-    fd:from_file(file)
-    fd:close()
+    file:close()
     sys.remove"test"
     print("OK")
 end
@@ -23,7 +21,7 @@ end
 
 print"-- Logs"
 do
-    local log = assert(sys.log("Lua.Log"))
+    local log = assert(sys.log())
     assert(log:error("Error"):warn("Warning"))
     print("OK")
 end
@@ -33,7 +31,7 @@ print"-- Random"
 do
     local rand = assert(sys.random())
     for i = 1, 20 do
-	sys.stdout:write(rand(100), "; ")
+	sys.stdout:write(rand(10), "; ")
     end
     print("\nOK")
 end
@@ -67,33 +65,34 @@ do
 end
 
 
-print"-- Directory list"
+print"-- Interface List"
 do
-    for file, type in sys.dir('.') do
-	print(file, type and "DIR" or "FILE")
+    local ifaddrs = assert(sock.getifaddrs())
+    for i, iface in ipairs(ifaddrs) do
+	local af = iface.family
+	sys.stdout:write(i, "\taddress family: ", af or "unknown", "\n")
+	if af then
+	    local host = sock.getnameinfo(iface.addr)
+	    sys.stdout:write("\tinet addr: ", sock.inet_ntop(iface.addr),
+		" <", host, ">", " Mask: ", sock.inet_ntop(iface.netmask), "\n")
+	    local flags = iface.flags
+	    sys.stdout:write("\t",
+		flags.up and "UP " or "",
+		flags.loopback and "LOOPBACK " or "",
+		flags.pointtopoint and "POINTOPOINT " or "",
+		"\n")
+	end
     end
     print("OK")
 end
 
 
-print"-- Signal: wait SIGINT"
+print"-- Directory List"
 do
-    local function on_signal(evq, evid, _, _, _, timeout)
-	if timeout then
-	    assert(evq:timeout(evid))
-	    assert(evq:ignore_signal("INT", false))
-	    print"SIGINT enabled. Please, press Ctrl-C..."
-	else
-	    print"Thanks!"
-	end
+    for file, type in sys.dir('/') do
+	print(file, type and "DIR" or "FILE")
     end
-
-    local evq = assert(sys.event_queue())
-
-    assert(evq:add_signal("INT", on_signal, 3000, true))
-    assert(evq:ignore_signal("INT", true))
-
-    evq:loop(10000)
-    print"OK"
+    print("OK")
 end
+
 

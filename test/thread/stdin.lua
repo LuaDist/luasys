@@ -1,4 +1,4 @@
-#!/usr/local/bin/lua
+#!/usr/bin/env lua
 
 local sys = require"sys"
 

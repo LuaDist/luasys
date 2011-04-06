@@ -11,9 +11,9 @@ local fd = sock.handle()
 assert(fd:socket("dgram"))
 
 assert(fd:sockopt("reuseaddr", 1))
-assert(fd:bind(sock.addr_in(MCAST_PORT)))
+assert(fd:bind(sock.addr():inet(MCAST_PORT)))
 
-assert(fd:membership(sock.inet_aton(MCAST_ADDR)))
+assert(fd:membership(sock.inet_pton(MCAST_ADDR)))
 
 while true do
 	sys.stdout:write(fd:recv())
