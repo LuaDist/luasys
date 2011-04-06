@@ -1,0 +1,13 @@
+--- This file is part of LuaDist project
+
+name = "luasys"
+version = "1.6"
+
+desc = "LuaSys - system and networking functions."
+author = "Nodir Temirhodzhaev"
+maintainer = "Peter Kapec"
+url = "http://luaforge.net/projects/luasys/"
+
+depends = {
+	"lua ~> 5.1"
+}
