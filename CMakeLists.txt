@@ -1,28 +1,26 @@
-# Copyright (C) 2007-2009 LuaDist.
+# Copyright (C) 2007-2011 LuaDist.
 # Created by Peter Kapec
 # Redistribution and use of this file is allowed according to the terms of the MIT license.
 # For details see the COPYRIGHT file distributed with LuaDist.
 # Please note that the package source code is licensed under its own license.
 
-PROJECT(luasys C)
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
-INCLUDE(dist.cmake)
+project ( luasys C )
+cmake_minimum_required ( VERSION 2.6 )
+include ( dist.cmake )
 
-# Build
-INCLUDE_DIRECTORIES(src src/event)
+include_directories ( src src/event )
 
-IF(WIN32 AND NOT CYGWIN)
-	ADD_DEFINITIONS(-DWIN32)
+if (WIN32 AND NOT CYGWIN )
+	add_definitions ( -DWIN32 )
 	#need? SET(WIN32_SRC src/win32/sys_win32.c )
-	SET(LIBS winmm ws2_32 mswsock)
-ELSEIF(UNIX)
-	SET(LIBS pthread rt)
-	ADD_DEFINITIONS(-DUSE_EPOLL)
-ENDIF(WIN32 AND NOT CYGWIN)
+	set ( LIBS winmm ws2_32 mswsock )
+elseif ( UNIX )
+	set ( LIBS rt )
+	add_definitions ( -DUSE_EPOLL )
+endif ()
+#FIX: BSD and OSX? -DUSE_KQUEUE
 
-
-
-ADD_LUA_MODULE(sys
+install_lua_module ( sys
   src/luasys.c
 # Note: these are included by luasys.c:
 #  src/sys_comm.c
@@ -50,10 +48,10 @@ ADD_LUA_MODULE(sys
 #  src/event/timeout.c
   src/sock/sys_sock.c
 )
-TARGET_LINK_LIBRARIES(sys ${LIBS})
+target_link_libraries ( sys ${LIBS} )
 
-# Install all files and documentation
-INSTALL (TARGETS sys DESTINATION ${INSTALL_CMOD})
+install_data ( README VERSION )
+install_test ( test/ )
 
-INSTALL (FILES README VERSION DESTINATION ${INSTALL_DATA})
-INSTALL (DIRECTORY test/ DESTINATION ${INSTALL_TEST})
+add_lua_test ( test/test_sys.lua )
+
