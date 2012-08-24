@@ -7,6 +7,7 @@ desc = "LuaSys - system and networking functions."
 author = "Nodir Temirhodzhaev"
 maintainer = "Peter Kapec"
 url = "http://luaforge.net/projects/luasys/"
+license = "Unknown"
 
 depends = {
 	"lua ~> 5.1"
