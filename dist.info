@@ -1,0 +1,55 @@
+type = "x86_64"
+arch = "Ubuntu"
+author = "Nodir Temirhodzhaev"
+depends = {
+[[lua ~> 5.1]],
+}
+
+desc = "LuaSys - system and networking functions."
+version = "1.6"
+maintainer = "Peter Kapec"
+files = {
+Runtime = {
+[[lib/lua/sys.so]],
+}
+,
+Data = {
+[[share/luasys/README]],
+[[share/luasys/VERSION]],
+}
+,
+Test = {
+[[share/luasys/test//isa/isapi.lua]],
+[[share/luasys/test//isa/fcgi.lua]],
+[[share/luasys/test//sock/mcastsend.lua]],
+[[share/luasys/test//sock/manyclnt.lua]],
+[[share/luasys/test//sock/trace.sh]],
+[[share/luasys/test//sock/unixsend.lua]],
+[[share/luasys/test//sock/mcastrecv.lua]],
+[[share/luasys/test//sock/unixrecv.lua]],
+[[share/luasys/test//sock/echoclnt.lua]],
+[[share/luasys/test//sock/connect.lua]],
+[[share/luasys/test//sock/daytimeclnt.lua]],
+[[share/luasys/test//sock/echosrvr.lua]],
+[[share/luasys/test//event/test_time.lua]],
+[[share/luasys/test//event/bench.lua]],
+[[share/luasys/test//event/pair.lua]],
+[[share/luasys/test//event/dirwatch.lua]],
+[[share/luasys/test//mem/test_mem.lua]],
+[[share/luasys/test//mem/bench.lua]],
+[[share/luasys/test//test_sys.lua]],
+[[share/luasys/test//thread/vms.lua]],
+[[share/luasys/test//thread/stdin.lua]],
+[[share/luasys/test//thread/dpool.lua]],
+[[share/luasys/test//thread/dinner.lua]],
+[[share/luasys/test//test_pid.lua]],
+[[share/luasys/test//win32/beep_svc.lua]],
+[[share/luasys/test//win32/test_win32.lua]],
+[[share/luasys/test//test_evq.lua]],
+}
+,
+}
+
+url = "http://luaforge.net/projects/luasys/"
+name = "luasys"
+license = "Unknown"
